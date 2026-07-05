@@ -1,0 +1,41 @@
+name: Build firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - firmware/**
+      - .github/workflows/build.yml
+  pull_request:
+    paths:
+      - firmware/**
+      - .github/workflows/build.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini', 'firmware/sdkconfig.defaults', 'firmware/partitions.csv', 'firmware/src/**') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build
+        run: pio run
