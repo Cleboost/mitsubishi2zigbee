@@ -1,0 +1,31 @@
+# PlatformIO / ESP-IDF build
+firmware/.pio/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/sdkconfig.*.old
+firmware/sdkconfig.esp32-*
+
+# Component manager (re-fetched on build)
+firmware/managed_components/
+firmware/dependencies.lock
+
+# OTA build artifacts
+firmware/.pio/build/**/*.ota
+firmware/scripts/image_builder_tool.py
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

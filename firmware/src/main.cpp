@@ -14,8 +14,10 @@
 #include "led_strip.h"
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
+#include "bdb/esp_zigbee_bdb_commissioning.h"
 
 #include "cn105.h"
+#include "ota_zigbee.h"
 
 static const char *TAG = "MITSU_ZB";
 
@@ -75,14 +77,13 @@ static void led_task(void *arg)
 #define ENDPOINT_ID       1
 #define CHANNEL_MASK      ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
 
-#define MANUFACTURER_NAME "\x0A""Mitsubishi"    // 10 chars
-#define MODEL_ID          "\x0C""MZ-Zigbee-C6"  // 12 chars
+#define MANUFACTURER_NAME "\x0A""Mitsubishi"
+#define MODEL_ID          "\x0C""MZ-Zigbee-C6"
 
-#define SETPOINT_DEFAULT  2100   // centi-degrees (21.0°C)
-#define SETPOINT_MIN      1600   // 16°C
-#define SETPOINT_MAX      3100   // 31°C
+#define SETPOINT_DEFAULT  2100
+#define SETPOINT_MIN      1600
+#define SETPOINT_MAX      3100
 
-// Custom thermostat attribute: vane position (0=AUTO 1..5=pos SWING=6)
 #define VANE_ATTR_ID  0x0400
 
 static hp_state_t g_hp = {};
@@ -196,6 +197,10 @@ static void push_state_to_zigbee(const hp_state_t *st)
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                                    const void *message)
 {
+    if (callback_id == ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID ||
+        callback_id == ESP_ZB_CORE_OTA_UPGRADE_QUERY_IMAGE_RESP_CB_ID) {
+        return ota_zigbee_action_handler(callback_id, message);
+    }
     if (callback_id != ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) return ESP_OK;
 
     const esp_zb_zcl_set_attr_value_message_t *m =
@@ -259,6 +264,7 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             g_led_state = LED_CONNECTED;
             ESP_LOGI(TAG, "paired — PAN=0x%04hx channel=%d addr=0x%04hx",
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), addr);
+            esp_zb_bdb_finding_binding_start_target(ENDPOINT_ID, 300);
         } else {
             g_led_state = LED_FOUND;
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_commissioning_cb,
@@ -292,6 +298,8 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *)MANUFACTURER_NAME);
     esp_zb_basic_cluster_add_attr(basic,
         ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *)MODEL_ID);
+    esp_zb_basic_cluster_add_attr(basic,
+        ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, (void *)FW_VERSION_STRING);
     esp_zb_cluster_list_add_basic_cluster(list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_identify_cluster_cfg_t id_cfg = { .identify_time = 0 };
@@ -307,7 +315,6 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         .system_mode                   = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF,
     };
     esp_zb_attribute_list_t *th = esp_zb_thermostat_cluster_create(&th_cfg);
-    // 16–31°C limits so Home Assistant shows the correct range
     int16_t lim_min = SETPOINT_MIN, lim_max = SETPOINT_MAX;
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, &lim_min);
@@ -371,6 +378,9 @@ static void hp_sync_task(void *arg)
 
 static void esp_zb_task(void *pvParameters)
 {
+    esp_zb_aps_src_binding_table_size_set(32);
+    esp_zb_aps_dst_binding_table_size_set(32);
+
     esp_zb_cfg_t zb_nwk_cfg = {};
     zb_nwk_cfg.esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER;
     zb_nwk_cfg.install_code_policy = false;
@@ -385,6 +395,7 @@ static void esp_zb_task(void *pvParameters)
         .app_device_version = 0,
     };
     esp_zb_ep_list_add_ep(ep_list, create_hvac_cluster_list(), ep_cfg);
+    ESP_ERROR_CHECK(ota_zigbee_register_endpoint(ep_list));
     esp_zb_device_register(ep_list);
 
     esp_zb_core_action_handler_register(zb_action_handler);
@@ -406,6 +417,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     ESP_LOGI(TAG, "=== mitsubishi2zigbee — CN105 ↔ Zigbee gateway ===");
+    ESP_LOGI(TAG, "firmware OTA version 0x%08lx (manuf 0x%04x type 0x%04x)",
+             (unsigned long)OTA_FILE_VERSION, OTA_MANUFACTURER_CODE, OTA_IMAGE_TYPE);
 
     xTaskCreate(led_task,     "led",     4096, NULL, 3, NULL);
     xTaskCreate(hp_sync_task, "hp_sync", 4096, NULL, 4, NULL);
