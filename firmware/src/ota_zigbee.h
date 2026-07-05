@@ -7,8 +7,8 @@
 #define OTA_ENDPOINT_ID          2
 #define OTA_MANUFACTURER_CODE    0x1337
 #define OTA_IMAGE_TYPE           0x0001
-#define OTA_FILE_VERSION         0x00010000
-#define FW_VERSION_STRING        "\x05""1.0.0"
+#define OTA_FILE_VERSION         0x00000001
+#define FW_VERSION_STRING        """0.0.1"
 #define OTA_HW_VERSION           0x0001
 #define OTA_MAX_DATA_SIZE        64
 
