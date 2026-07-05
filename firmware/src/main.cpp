@@ -1,15 +1,11 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// mitsubishi2zigbee — Passerelle Zigbee pour climatiseur Mitsubishi (CN105)
+// mitsubishi2zigbee — Zigbee gateway for Mitsubishi heat pumps (CN105)
 //
-// Inspiré de gysmo38/mitsubishi2MQTT, mais expose l'unité en Zigbee (cluster
-// Thermostat + Fan Control) au lieu de MQTT. Tourne sur ESP32-C6 en ESP-IDF.
+// Based on gysmo38/mitsubishi2MQTT; exposes Thermostat + Fan Control clusters
+// on ESP32-C6 (ESP-IDF) instead of MQTT.
 //
-//   Home Assistant  ──Zigbee──►  ESP32-C6  ──UART CN105──►  Unité Mitsubishi
+//   Home Assistant ──Zigbee──► ESP32-C6 ──UART CN105──► Mitsubishi unit
 //
-// LED de statut (WS2812, GPIO8) :
-//   bleu rapide = recherche réseau | bleu lent = trouvé, pas appairé
-//   vert        = appairé au réseau Zigbee
-// ─────────────────────────────────────────────────────────────────────────────
+// Status LED (WS2812, GPIO8): fast blue = scanning | slow blue = found, not paired | green = paired
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_check.h"
@@ -23,15 +19,13 @@
 
 static const char *TAG = "MITSU_ZB";
 
-// ─── LED de statut (WS2812, ordre RGB sur le Waveshare C6-Zero) ──────────────
-
 #define LED_PIN     8
 #define LED_BRIGHT  20
 
 typedef enum {
-    LED_SEARCHING,  // bleu rapide : scan réseau
-    LED_FOUND,      // bleu lent   : réseau trouvé, pas encore appairé
-    LED_CONNECTED,  // vert        : appairé
+    LED_SEARCHING,
+    LED_FOUND,
+    LED_CONNECTED,
 } led_state_t;
 
 static volatile led_state_t g_led_state = LED_SEARCHING;
@@ -56,7 +50,7 @@ static void led_task(void *arg)
     rmt_cfg.resolution_hz = 10 * 1000 * 1000;
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &g_led));
 
-    led_set(LED_BRIGHT, LED_BRIGHT, LED_BRIGHT);   // test blanc 1s
+    led_set(LED_BRIGHT, LED_BRIGHT, LED_BRIGHT);
     vTaskDelay(pdMS_TO_TICKS(1000));
     led_off();
 
@@ -78,30 +72,22 @@ static void led_task(void *arg)
     }
 }
 
-// ─── Définitions Zigbee ─────────────────────────────────────────────────────
-
 #define ENDPOINT_ID       1
 #define CHANNEL_MASK      ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
 
 #define MANUFACTURER_NAME "\x0A""Mitsubishi"    // 10 chars
 #define MODEL_ID          "\x0C""MZ-Zigbee-C6"  // 12 chars
 
-// Consignes : int16 en centi-degrés (21°C = 2100)
-#define SETPOINT_DEFAULT  2100
+#define SETPOINT_DEFAULT  2100   // centi-degrees (21.0°C)
 #define SETPOINT_MIN      1600   // 16°C
 #define SETPOINT_MAX      3100   // 31°C
 
-// Attribut personnalisé pour la position des pales (dans le cluster thermostat)
-// 0=AUTO  1=pos1  2=pos2  3=pos3  4=pos4  5=pos5  6=SWING
+// Custom thermostat attribute: vane position (0=AUTO 1..5=pos SWING=6)
 #define VANE_ATTR_ID  0x0400
 
-// État partagé de l'unité (mis à jour par cn105_poll)
 static hp_state_t g_hp = {};
-static uint8_t    g_vane_attr = 0;  // valeur persistante pour l'attribut ZCL
+static uint8_t    g_vane_attr = 0;
 
-// ─── Conversion Zigbee ↔ Mitsubishi ─────────────────────────────────────────
-
-// system_mode Zigbee → action sur l'unité
 static void apply_system_mode(uint8_t sys_mode)
 {
     switch (sys_mode) {
@@ -124,12 +110,11 @@ static void apply_system_mode(uint8_t sys_mode)
         cn105_set_power(true); cn105_set_mode("DRY");
         break;
     default:
-        ESP_LOGW(TAG, "system_mode 0x%02x non géré", sys_mode);
+        ESP_LOGW(TAG, "unsupported system_mode 0x%02x", sys_mode);
         break;
     }
 }
 
-// vane Zigbee (index 0-6) → inclinaison Mitsubishi
 static const char *const VANE_NAMES[] = {"AUTO","1","2","3","4","5","SWING"};
 #define VANE_COUNT 7
 
@@ -145,7 +130,6 @@ static uint8_t hp_to_vane_idx(const hp_state_t *st)
     return 0;
 }
 
-// fan_mode Zigbee → vitesse Mitsubishi
 static void apply_fan_mode(uint8_t fan_mode)
 {
     switch (fan_mode) {
@@ -159,7 +143,6 @@ static void apply_fan_mode(uint8_t fan_mode)
     }
 }
 
-// État Mitsubishi → system_mode Zigbee (pour le retour d'information)
 static uint8_t hp_to_system_mode(const hp_state_t *st)
 {
     if (!st->power_on)               return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
@@ -180,7 +163,6 @@ static uint8_t hp_to_fan_mode(const hp_state_t *st)
     return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO;
 }
 
-// Pushes current state of the unit to Zigbee attributes.
 static void push_state_to_zigbee(const hp_state_t *st)
 {
     int16_t local_temp = (int16_t)(st->room_temp * 100.0f);
@@ -210,8 +192,6 @@ static void push_state_to_zigbee(const hp_state_t *st)
         VANE_ATTR_ID, &g_vane_attr, false);
     esp_zb_lock_release();
 }
-
-// ─── Réception des commandes Home Assistant ─────────────────────────────────
 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                                    const void *message)
@@ -244,13 +224,11 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     return ESP_OK;
 }
 
-// ─── Commissioning Zigbee ───────────────────────────────────────────────────
-
 static void bdb_start_commissioning_cb(uint8_t mode_mask)
 {
     ESP_RETURN_ON_FALSE(
         esp_zb_bdb_start_top_level_commissioning(mode_mask) == ESP_OK,
-        , TAG, "Échec démarrage commissioning");
+        , TAG, "commissioning start failed");
 }
 
 extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
@@ -270,7 +248,7 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             g_led_state = LED_SEARCHING;
             esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
         } else {
-            ESP_LOGW(TAG, "Échec init stack: %s", esp_err_to_name(err_status));
+            ESP_LOGW(TAG, "stack init failed: %s", esp_err_to_name(err_status));
         }
         break;
 
@@ -279,7 +257,7 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         bool in_network = (addr != 0xFFFE && addr != 0xFFFF);
         if (in_network) {
             g_led_state = LED_CONNECTED;
-            ESP_LOGI(TAG, "✅ Appairé ! PAN=0x%04hx Canal=%d Adresse=0x%04hx",
+            ESP_LOGI(TAG, "paired — PAN=0x%04hx channel=%d addr=0x%04hx",
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), addr);
         } else {
             g_led_state = LED_FOUND;
@@ -294,23 +272,20 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         break;
 
     default:
-        ESP_LOGI(TAG, "Signal ZDO: %s (0x%x), status: %s",
+        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s",
                  esp_zb_zdo_signal_to_string(sig_type), sig_type,
                  esp_err_to_name(err_status));
         break;
     }
 }
 
-// ─── Construction de l'endpoint thermostat + fan ────────────────────────────
-
 static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
 {
     esp_zb_cluster_list_t *list = esp_zb_zcl_cluster_list_create();
 
-    // Basic
     esp_zb_basic_cluster_cfg_t basic_cfg = {
         .zcl_version  = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
-        .power_source = 0x01,   // secteur
+        .power_source = 0x01,
     };
     esp_zb_attribute_list_t *basic = esp_zb_basic_cluster_create(&basic_cfg);
     esp_zb_basic_cluster_add_attr(basic,
@@ -319,12 +294,10 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *)MODEL_ID);
     esp_zb_cluster_list_add_basic_cluster(list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    // Identify
     esp_zb_identify_cluster_cfg_t id_cfg = { .identify_time = 0 };
     esp_zb_cluster_list_add_identify_cluster(list,
         esp_zb_identify_cluster_create(&id_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    // Thermostat
     esp_zb_thermostat_cluster_cfg_t th_cfg = {
         .local_temperature             = 2100,
         .occupied_cooling_setpoint     = SETPOINT_DEFAULT,
@@ -334,7 +307,7 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         .system_mode                   = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF,
     };
     esp_zb_attribute_list_t *th = esp_zb_thermostat_cluster_create(&th_cfg);
-    // Bornes de consigne 16–31°C pour que HA affiche la bonne plage
+    // 16–31°C limits so Home Assistant shows the correct range
     int16_t lim_min = SETPOINT_MIN, lim_max = SETPOINT_MAX;
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, &lim_min);
@@ -344,11 +317,9 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_COOL_SETPOINT_LIMIT_ID, &lim_min);
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max);
-    // Attribut personnalisé : position des pales (uint8, lecture/écriture)
     esp_zb_thermostat_cluster_add_attr(th, VANE_ATTR_ID, &g_vane_attr);
     esp_zb_cluster_list_add_thermostat_cluster(list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    // Fan Control
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {
         .fan_mode          = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO,
         .fan_mode_sequence = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SEQUENCE_LOW_MED_HIGH_AUTO,
@@ -359,26 +330,22 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
     return list;
 }
 
-// ─── Boucle de synchronisation avec l'unité Mitsubishi ──────────────────────
-
 static void hp_sync_task(void *arg)
 {
     cn105_init();
 
-    // Handshake : on (re)tente jusqu'à recevoir le CONNECT_ACK
     while (!g_hp.connected) {
         cn105_connect();
         for (int i = 0; i < 10 && !g_hp.connected; i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
             cn105_poll(&g_hp);
         }
-        if (!g_hp.connected) ESP_LOGW(TAG, "Pas de réponse de l'unité, nouvel essai...");
+        if (!g_hp.connected) ESP_LOGW(TAG, "no response from unit, retrying...");
     }
-    ESP_LOGI(TAG, "Unité Mitsubishi connectée");
+    ESP_LOGI(TAG, "Mitsubishi unit connected");
 
     uint8_t cycle = 0;
     while (true) {
-        // Interroge tour à tour réglages / température / statut
         switch (cycle % 3) {
         case 0: cn105_request_settings();  break;
         case 1: cn105_request_room_temp(); break;
@@ -386,7 +353,6 @@ static void hp_sync_task(void *arg)
         }
         cycle++;
 
-        // Laisse le temps à la réponse d'arriver, décode en continu
         bool changed = false;
         for (int i = 0; i < 10; i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -395,15 +361,13 @@ static void hp_sync_task(void *arg)
 
         if (changed) {
             push_state_to_zigbee(&g_hp);
-            ESP_LOGI(TAG, "📡 %s %s | consigne %.1f°C | pièce %.1f°C | vent. %s | %s",
+            ESP_LOGI(TAG, "state: %s %s | setpoint %.1f°C | room %.1f°C | fan %s | %s",
                      g_hp.power_on ? "ON" : "OFF", g_hp.mode,
                      g_hp.target_temp, g_hp.room_temp, g_hp.fan,
-                     g_hp.operating ? "actif" : "repos");
+                     g_hp.operating ? "running" : "idle");
         }
     }
 }
-
-// ─── Tâche Zigbee ───────────────────────────────────────────────────────────
 
 static void esp_zb_task(void *pvParameters)
 {
@@ -432,8 +396,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
-// ─── Point d'entrée ─────────────────────────────────────────────────────────
-
 extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
@@ -443,7 +405,7 @@ extern "C" void app_main(void)
     config.host_config.host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE;
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
-    ESP_LOGI(TAG, "=== mitsubishi2zigbee — passerelle CN105 ↔ Zigbee ===");
+    ESP_LOGI(TAG, "=== mitsubishi2zigbee — CN105 ↔ Zigbee gateway ===");
 
     xTaskCreate(led_task,     "led",     4096, NULL, 3, NULL);
     xTaskCreate(hp_sync_task, "hp_sync", 4096, NULL, 4, NULL);

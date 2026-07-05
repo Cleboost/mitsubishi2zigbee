@@ -1,7 +1,5 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// cn105.cpp — Implémentation du protocole Mitsubishi CN105 (ESP-IDF)
-// Constantes du protocole reprises de SwiCago/HeatPump (licence LGPL).
-// ─────────────────────────────────────────────────────────────────────────────
+// cn105.cpp — Mitsubishi CN105 protocol (ESP-IDF)
+// Protocol constants from SwiCago/HeatPump (LGPL).
 #include "cn105.h"
 
 #include <string.h>
@@ -12,34 +10,27 @@
 
 static const char *TAG = "CN105";
 
-// ─── Constantes du protocole ────────────────────────────────────────────────
-
 #define PACKET_LEN  22
 #define RX_BUF_SIZE 256
 
-// Trames d'en-tête
 static const uint8_t CONNECT[]    = {0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8};
 static const uint8_t INFOHEADER[] = {0xfc, 0x42, 0x01, 0x30, 0x10};
 static const uint8_t SETHEADER[]  = {0xfc, 0x41, 0x01, 0x30, 0x10};
 
-// Types de trame reçue (octet 1)
 #define TYPE_INFO_RESP    0x62
 #define TYPE_SET_ACK      0x61
 #define TYPE_CONNECT_ACK  0x7a
 
-// Modes d'information (data[0] d'une requête/réponse 0x62)
 #define INFO_SETTINGS     0x02
 #define INFO_ROOM_TEMP    0x03
 #define INFO_STATUS       0x06
 
-// Bits de contrôle SET : quels champs sont modifiés
 #define CTRL_POWER  0x01
 #define CTRL_MODE   0x02
 #define CTRL_TEMP   0x04
 #define CTRL_FAN    0x08
 #define CTRL_VANE   0x10
 
-// Tables de correspondance octet ↔ chaîne
 static const uint8_t     POWER_B[]  = {0x00, 0x01};
 static const char *const POWER_S[]  = {"OFF", "ON"};
 static const uint8_t     MODE_B[]   = {0x01, 0x02, 0x03, 0x07, 0x08};
@@ -48,8 +39,6 @@ static const uint8_t     FAN_B[]    = {0x00, 0x01, 0x02, 0x03, 0x05, 0x06};
 static const char *const FAN_S[]    = {"AUTO", "QUIET", "1", "2", "3", "4"};
 static const uint8_t     VANE_B[]   = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x07};
 static const char *const VANE_S[]   = {"AUTO", "1", "2", "3", "4", "5", "SWING"};
-
-// ─── Helpers de correspondance ──────────────────────────────────────────────
 
 static const char *byte_to_str(uint8_t b, const uint8_t *bytes, const char *const *strs, int n)
 {
@@ -69,8 +58,6 @@ static uint8_t checksum(const uint8_t *p, int len)
     for (int i = 0; i < len; i++) sum += p[i];
     return (0xfc - sum) & 0xff;
 }
-
-// ─── Émission ───────────────────────────────────────────────────────────────
 
 static void write_packet(uint8_t *packet)
 {
@@ -92,7 +79,7 @@ void cn105_init(void)
     ESP_ERROR_CHECK(uart_param_config(CN105_UART_PORT, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(CN105_UART_PORT, CN105_TX_PIN, CN105_RX_PIN,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_LOGI(TAG, "UART%d initialisé (2400 8E1, TX=%d RX=%d)",
+    ESP_LOGI(TAG, "UART%d ready (2400 8E1, TX=%d RX=%d)",
              CN105_UART_PORT, CN105_TX_PIN, CN105_RX_PIN);
 }
 
@@ -114,25 +101,24 @@ void cn105_request_settings(void)  { request_info(INFO_SETTINGS); }
 void cn105_request_room_temp(void) { request_info(INFO_ROOM_TEMP); }
 void cn105_request_status(void)    { request_info(INFO_STATUS); }
 
-// Construit une trame SET ne positionnant que les champs marqués dans `control`.
 static void send_set(uint8_t control, uint8_t power, uint8_t mode,
                      float temp, uint8_t fan)
 {
     uint8_t packet[PACKET_LEN] = {};
     memcpy(packet, SETHEADER, sizeof(SETHEADER));
-    packet[5] = 0x01;       // commande SET
-    packet[6] = control;    // octet de contrôle 1
-    packet[7] = 0x00;       // octet de contrôle 2 (wideVane, inutilisé ici)
+    packet[5] = 0x01;
+    packet[6] = control;
+    packet[7] = 0x00;       // wideVane unused
 
     if (control & CTRL_POWER) packet[8]  = power;
     if (control & CTRL_MODE)  packet[9]  = mode;
     if (control & CTRL_TEMP) {
-        // Mode hérité : 31 - température entière, à l'index 10
+        // Legacy encoding: 31 - integer temp at byte 10
         int t = (int)lroundf(temp);
         if (t < 16) t = 16;
         if (t > 31) t = 31;
         packet[10] = 31 - t;
-        // Mode 0.5°C : (temp*2)+128 à l'index 19 (unités récentes)
+        // 0.5°C encoding: (temp*2)+128 at byte 19 (newer units)
         packet[19] = (uint8_t)((int)lroundf(temp * 2.0f) + 128);
     }
     if (control & CTRL_FAN)  packet[11] = fan;
@@ -157,7 +143,7 @@ void cn105_set_temp(float temp_c)
 {
     if (temp_c < 16.0f) temp_c = 16.0f;
     if (temp_c > 31.0f) temp_c = 31.0f;
-    temp_c = roundf(temp_c * 2.0f) / 2.0f;   // pas de 0.5
+    temp_c = roundf(temp_c * 2.0f) / 2.0f;
     send_set(CTRL_TEMP, 0, 0, temp_c, 0);
     ESP_LOGI(TAG, "→ SET temp=%.1f", temp_c);
 }
@@ -172,7 +158,6 @@ void cn105_set_fan(const char *fan)
 void cn105_set_vane(const char *vane)
 {
     uint8_t b = str_to_byte(vane, VANE_B, VANE_S, 7);
-    // CTRL_VANE (0x10) : seul le champ vane est modifié
     uint8_t packet[PACKET_LEN] = {};
     memcpy(packet, SETHEADER, sizeof(SETHEADER));
     packet[5] = 0x01;
@@ -182,9 +167,6 @@ void cn105_set_vane(const char *vane)
     ESP_LOGI(TAG, "→ SET vane=%s", vane);
 }
 
-// ─── Réception / décodage ───────────────────────────────────────────────────
-
-// Décode une trame 0x62 complète (data = octets après l'en-tête de 5 octets).
 static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
 {
     bool changed = false;
@@ -198,8 +180,8 @@ static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
         if (strcmp(mode, st->mode) != 0) { strncpy(st->mode, mode, sizeof(st->mode)); changed = true; }
 
         float temp;
-        if (data[11] != 0x00) temp = (data[11] - 128) / 2.0f;   // mode 0.5°C
-        else                  temp = 31.0f - data[5];           // mode hérité
+        if (data[11] != 0x00) temp = (data[11] - 128) / 2.0f;   // 0.5°C mode
+        else                  temp = 31.0f - data[5];           // legacy mode
         if (fabsf(temp - st->target_temp) > 0.01f) { st->target_temp = temp; changed = true; }
 
         const char *fan = byte_to_str(data[6], FAN_B, FAN_S, 6);
@@ -210,8 +192,8 @@ static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
     }
     else if (info_mode == INFO_ROOM_TEMP && dlen >= 7) {
         float temp;
-        if (data[6] != 0x00) temp = (data[6] - 128) / 2.0f;     // mode 0.5°C
-        else                 temp = 10.0f + data[3];            // mode hérité
+        if (data[6] != 0x00) temp = (data[6] - 128) / 2.0f;     // 0.5°C mode
+        else                 temp = 10.0f + data[3];            // legacy mode
         if (fabsf(temp - st->room_temp) > 0.01f) { st->room_temp = temp; changed = true; }
     }
     else if (info_mode == INFO_STATUS && dlen >= 5) {
@@ -226,9 +208,9 @@ bool cn105_poll(hp_state_t *out)
     bool changed = false;
     uint8_t byte;
 
-    // Lecture octet par octet : on resynchronise sur l'octet de départ 0xfc.
+    // Resync on 0xfc start byte
     while (uart_read_bytes(CN105_UART_PORT, &byte, 1, 0) == 1) {
-        if (byte != 0xfc) continue;             // resynchronisation
+        if (byte != 0xfc) continue;
 
         uint8_t hdr[4];
         if (uart_read_bytes(CN105_UART_PORT, hdr, 4, pdMS_TO_TICKS(50)) != 4) break;
@@ -249,7 +231,7 @@ bool cn105_poll(hp_state_t *out)
         } else if (type == TYPE_INFO_RESP) {
             if (parse_info(data, dlen, out)) changed = true;
         }
-        // TYPE_SET_ACK (0x61) : accusé de réception, rien à décoder.
+        // TYPE_SET_ACK (0x61): no payload
     }
     return changed;
 }
