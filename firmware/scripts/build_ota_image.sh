@@ -22,12 +22,22 @@ if [[ ! -f "$TOOL" ]]; then
         -o "$TOOL"
 fi
 
-python3 "$TOOL" \
-    --manuf-id "$MANUF_ID" \
-    --image-type "$IMAGE_TYPE" \
-    --file-version "$FILE_VERSION" \
-    --tag "0x0000:${BUILD_BIN}" \
-    -c "$OUTPUT"
+WORK_DIR="$(dirname "$OUTPUT")"
+mkdir -p "$WORK_DIR"
+GENERATED_NAME="$(printf '%04X-%04X-%08X-ota-file.zigbee' \
+    "$((MANUF_ID))" "$((IMAGE_TYPE))" "$((FILE_VERSION))")"
+GENERATED_PATH="${WORK_DIR}/${GENERATED_NAME}"
+
+(
+    cd "$WORK_DIR"
+    python3 "$TOOL" \
+        --manuf-id "$MANUF_ID" \
+        --image-type "$IMAGE_TYPE" \
+        --file-version "$FILE_VERSION" \
+        --tag 0x0000 "${BUILD_BIN}"
+)
+
+mv -f "$GENERATED_PATH" "$OUTPUT"
 
 echo "OTA image: $OUTPUT"
 ls -lh "$OUTPUT"
