@@ -1,16 +1,9 @@
-// Convertisseur Zigbee2MQTT pour mitsubishi2zigbee (ESP32-C6)
-// Fichier à placer dans /config/zigbee2mqtt/mitsubishi_esp32c6.js
-// Puis ajouter dans configuration.yaml :
-//   external_converters:
-//     - mitsubishi_esp32c6.js
-
 const fz = require('zigbee-herdsman-converters/converters/fromZigbee');
 const tz = require('zigbee-herdsman-converters/converters/toZigbee');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const e = exposes.presets;
 const ea = exposes.access;
 
-// Noms des positions de pales (index 0-6 = attribut 0x0400 du cluster thermostat)
 const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
 
 const fzVane = {
