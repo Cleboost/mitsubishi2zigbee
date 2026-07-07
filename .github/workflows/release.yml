@@ -33,7 +33,7 @@ jobs:
           echo "file_version=${FILE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "ota_name=MZ-Zigbee-C6_${VERSION}.ota" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.platformio
