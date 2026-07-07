@@ -833,7 +833,7 @@
 		(property "Reference" "J1"
 			(at 4 -3.7 0)
 			(layer "F.SilkS")
-			(uuid "6be51494-a854-47fc-9f7a-5e98328931a0")
+			(uuid "d2b108e1-2250-4a68-b7c6-8fe7e89ef70a")
 			(effects
 				(font
 					(size 1 1)
@@ -841,10 +841,10 @@
 				)
 			)
 		)
-		(property "Value" "Conn_01x05"
+		(property "Value" "CN105"
 			(at 4 4.3 0)
 			(layer "F.Fab")
-			(uuid "2dfc30da-61cb-41de-a20b-8c7fdb6c9f84")
+			(uuid "a79b7932-a86d-47e6-9e12-73059135ea83")
 			(effects
 				(font
 					(size 1 1)
@@ -856,7 +856,7 @@
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
-			(uuid "71b57a24-5ce4-49e2-a172-97ea47c83d8c")
+			(uuid "512e3059-28d6-4743-bdd1-7ca2eeba5b4a")
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -867,7 +867,7 @@
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
-			(uuid "f6d478c9-860c-401c-9870-41f75e04e870")
+			(uuid "c7ee139e-e4d6-4816-9153-9f4117ff7067")
 			(effects
 				(font
 					(size 1.27 1.27)
