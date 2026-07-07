@@ -85,12 +85,13 @@ In the meantime, the external converter source is already available in [`zigbee2
 
 ```
 mitsubishi2zigbee/
+├── hardware/                  # KiCad PCB (CN105 carrier for ESP32-C6-Zero)
 ├── firmware/                  # ESP-IDF / PlatformIO project
 │   └── src/
 │       ├── main.cpp           # Zigbee endpoint + status LED
 │       └── cn105.cpp          # Mitsubishi CN105 UART driver
-├── zigbee2mqtt_converter/     # Optional Z2M external converter
-└── hardware/                  # KiCad PCB (CN105 carrier for ESP32-C6-Zero)
+└── zigbee2mqtt_converter/     # Optional Z2M external converter
+
 ```
 
 ## License
