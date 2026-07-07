@@ -29,3 +29,11 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# KiCad
+hardware/**/*-backups/
+hardware/**/*-save.kicad_*
+hardware/**/fp-info-cache
+hardware/**/_autosave-*
+hardware/**/.history/
+hardware/**/*.lck

@@ -90,7 +90,7 @@ mitsubishi2zigbee/
 │       ├── main.cpp           # Zigbee endpoint + status LED
 │       └── cn105.cpp          # Mitsubishi CN105 UART driver
 ├── zigbee2mqtt_converter/     # Optional Z2M external converter
-└── hardware/                  # Schematics and PCB (planned)
+└── hardware/                  # KiCad PCB (CN105 carrier for ESP32-C6-Zero)
 ```
 
 ## License
