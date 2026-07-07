@@ -8,6 +8,8 @@ KiCad PCB for a [Waveshare ESP32-C6-Zero](https://www.waveshare.com/esp32-c6-zer
 | CN105 connector | `JST:JST_PA_B05B-PASK-1_1x05_P2.00mm_Vertical_CN105` |
 | Level shifting | 5 V UART from the unit → 3.3 V for the ESP |
 
+![Schematic](schematic.png)
+
 ## Open in KiCad
 
 ```bash
@@ -21,6 +23,7 @@ Project-specific symbol and footprint libraries live in `libs/`.
 ```
 hardware/
 ├── README.md
+├── schematic.png
 ├── mitsubishi2zigbee.kicad_pro
 ├── mitsubishi2zigbee.kicad_sch
 ├── mitsubishi2zigbee.kicad_pcb
