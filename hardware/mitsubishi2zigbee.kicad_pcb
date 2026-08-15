@@ -2497,6 +2497,17 @@
 		)
 		(embedded_fonts no)
 	)
+	(gr_rect
+		(start 110 30)
+		(end 140 75)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "Dwgs.User")
+		(uuid "dffbee65-f54c-458f-86e6-f4249731922f")
+	)
 	(segment
 		(start 119 44)
 		(end 118 44)
