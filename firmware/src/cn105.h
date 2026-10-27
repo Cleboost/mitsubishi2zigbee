@@ -18,8 +18,8 @@ extern "C" {
 #endif
 
 #define CN105_UART_PORT   UART_NUM_1
-#define CN105_TX_PIN      4    // ESP TX → CN105 pin 5 (unit RX)
-#define CN105_RX_PIN      5    // ESP RX ← CN105 pin 4 (unit TX)
+#define CN105_TX_PIN      5    // ESP TX → level shifter → CN105 pin 5 (unit RX)
+#define CN105_RX_PIN      4    // ESP RX ← level shifter ← CN105 pin 4 (unit TX)
 
 typedef struct {
     bool  connected;

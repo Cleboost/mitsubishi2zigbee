@@ -44,8 +44,8 @@ The CN105 port provides 12 V, 5 V, and 5 V logic UART lines.
 | 1 | 12 V | — | Do **not** use to power the ESP |
 | 2 | GND | GND | Common ground |
 | 3 | 5 V | 5 V / VBUS | Powers the ESP32-C6 |
-| 4 | TX (unit) | GPIO 5 (RX) | 5 V logic — use a level shifter (5 V → 3.3 V) |
-| 5 | RX (unit) | GPIO 4 (TX) | 3.3 V from the ESP is sufficient |
+| 4 | TX (unit) | GPIO 4 (RX) | 5 V logic — level shifted (5 V → 3.3 V) |
+| 5 | RX (unit) | GPIO 5 (TX) | 3.3 V logic — level shifted (3.3 V → 5 V) |
 
 > **Warning:** Never feed 12 V into the ESP. Power the board from the CN105 5 V pin only.
 
