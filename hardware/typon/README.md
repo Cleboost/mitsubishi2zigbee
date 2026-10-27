@@ -9,9 +9,8 @@ Ce dossier contient les fichiers prêts pour l'impression de votre typon (transp
 
 ## Caractéristiques du typon
 
-* **Contour du PCB réel (Edge.Cuts) :** Rectangle intérieur de 30 × 45 mm (trait fin de 0,1 mm) indiquant la taille finale de la carte époxy.
-* **Cadre de découpe du papier transparent :** Un grand rectangle extérieur noir (40 × 55 mm, trait de 0,25 mm) situé à **5 mm tout autour du circuit**. C'est le guide de coupe au cutter ou aux ciseaux pour découper le transparent sans risquer d'abîmer le circuit.
-* **Mires en croix aux 4 angles :** 4 grandes croix de repérage (6 mm) situées sur chaque coin du cadre de découpe du transparent.
+* **Cadre de découpe (30 × 45 mm) :** Le rectangle extérieur noir ($0{,}25\text{ mm}$) coïncide **exactement avec les dimensions réelles de la carte finale découpée** ($30{,}0 \times 45{,}0\text{ mm}$). Une fois votre transparent découpé sur ce trait, il a exactement la même taille que votre morceau de cuivre pré-découpé : vous pouvez les superposer bord à bord parfaits.
+* **Mires en croix aux 4 angles :** 4 croix de $6\text{ mm}$ centrées sur les 4 coins du circuit pour aligner les arrêtes au cutter avec une règle métallique.
 * **Témoin de sens de lecture « F.Cu » :**
   * Gravé directement en cuivre en haut à droite ($x = 137{,}5\text{ mm}$, $y = 33\text{ mm}$).
   * **Règle absolue d'insolation :**
