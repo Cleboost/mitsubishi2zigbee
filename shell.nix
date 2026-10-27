@@ -21,6 +21,7 @@ pkgs.mkShell {
     # Utilities
     git
     gnumake
+    just
   ];
 
   shellHook = ''
