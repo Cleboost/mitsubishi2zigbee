@@ -9,8 +9,9 @@ Ce dossier contient les fichiers prêts pour l'impression de votre typon (transp
 
 ## Caractéristiques du typon
 
-* **Cadre de détourage :** Tracé noir net de 30 × 45 mm (épaisseur 0,2 mm) matérialisant les contours exacts du circuit.
-* **Croix de repérage aux 4 angles :** 4 mires en croix (longueur 4 mm) situées à chaque angle extérieur pour aligner précisément votre découpe ou superposition.
+* **Contour du PCB réel (Edge.Cuts) :** Rectangle intérieur de 30 × 45 mm (trait fin de 0,1 mm) indiquant la taille finale de la carte époxy.
+* **Cadre de découpe du papier transparent :** Un grand rectangle extérieur noir (40 × 55 mm, trait de 0,25 mm) situé à **5 mm tout autour du circuit**. C'est le guide de coupe au cutter ou aux ciseaux pour découper le transparent sans risquer d'abîmer le circuit.
+* **Mires en croix aux 4 angles :** 4 grandes croix de repérage (6 mm) situées sur chaque coin du cadre de découpe du transparent.
 * **Témoin de sens de lecture « F.Cu » :**
   * Gravé directement en cuivre en haut à droite ($x = 137{,}5\text{ mm}$, $y = 33\text{ mm}$).
   * **Règle absolue d'insolation :**
