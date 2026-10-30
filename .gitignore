@@ -29,6 +29,7 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+.direnv
 
 # KiCad
 hardware/**/*-backups/

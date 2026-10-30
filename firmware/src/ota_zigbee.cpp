@@ -3,7 +3,6 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
-#include "esp_timer.h"
 #include "esp_zigbee_ota.h"
 
 static const char *TAG = "OTA_ZB";
@@ -53,7 +52,6 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
 {
     static uint32_t total_size = 0;
     static uint32_t offset = 0;
-    static int64_t start_time = 0;
     esp_err_t ret = ESP_OK;
 
     if (message.info.status != ESP_ZB_ZCL_STATUS_SUCCESS) {
@@ -62,8 +60,6 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
 
     switch (message.upgrade_status) {
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
-        ESP_LOGI(TAG, "OTA start");
-        start_time = esp_timer_get_time();
         s_ota_partition = esp_ota_get_next_update_partition(nullptr);
         if (!s_ota_partition) {
             ESP_LOGE(TAG, "no OTA partition");
@@ -76,7 +72,6 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
         total_size = message.ota_header.image_size;
         offset += message.payload_size;
-        ESP_LOGI(TAG, "OTA progress %lu/%lu", offset, total_size);
         if (message.payload_size && message.payload) {
             void *payload = nullptr;
             uint16_t payload_size = 0;
@@ -89,31 +84,25 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
         break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
-        ESP_LOGI(TAG, "OTA apply");
         break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
         ret = (offset == total_size) ? ESP_OK : ESP_FAIL;
-        ESP_LOGI(TAG, "OTA check: %s", esp_err_to_name(ret));
         offset = 0;
         total_size = 0;
         s_tag_received = false;
         break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
-        ESP_LOGI(TAG, "OTA done — version 0x%lx, %lu bytes, %lld ms",
-                 message.ota_header.file_version, message.ota_header.image_size,
-                 (esp_timer_get_time() - start_time) / 1000);
         ret = esp_ota_end(s_ota_handle);
         ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_end failed");
         ret = esp_ota_set_boot_partition(s_ota_partition);
         ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_set_boot_partition failed");
-        ESP_LOGW(TAG, "rebooting into new firmware");
+        ESP_LOGW(TAG, "OTA reboot");
         esp_restart();
         break;
 
     default:
-        ESP_LOGD(TAG, "OTA status %d", message.upgrade_status);
         break;
     }
 
@@ -123,11 +112,7 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
 static esp_err_t ota_query_image_resp_handler(
     esp_zb_zcl_ota_upgrade_query_image_resp_message_t message)
 {
-    if (message.info.status == ESP_ZB_ZCL_STATUS_SUCCESS) {
-        ESP_LOGI(TAG, "OTA image from 0x%04hx ep %d — version 0x%lx size %lu",
-                 message.server_addr.u.short_addr, message.server_endpoint,
-                 message.file_version, message.image_size);
-    }
+    (void)message;
     return ESP_OK;
 }
 
