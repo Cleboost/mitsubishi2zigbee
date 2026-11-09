@@ -29,7 +29,15 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
-.direnv
+
+# direnv / Nix (shell.nix + .envrc stay tracked)
+.direnv/
+result
+result-*
+
+# Local secrets — not .envrc (direnv hook)
+.env
+.env.local
 
 # KiCad
 hardware/**/*-backups/
