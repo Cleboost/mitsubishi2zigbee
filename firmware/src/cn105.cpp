@@ -146,13 +146,6 @@ static void ensure_state_defaults(void)
     s_state_valid = true;
 }
 
-static void note_temp_encoding_from_info(const uint8_t *data, int dlen)
-{
-    if (dlen < 12) return;
-    s_half_degree = (data[11] != 0x00);
-    s_half_degree_known = true;
-}
-
 static void copy_cmd_fields(const hp_state_t *src, hp_state_t *dst)
 {
     dst->power_on = src->power_on;
@@ -162,13 +155,18 @@ static void copy_cmd_fields(const hp_state_t *src, hp_state_t *dst)
     strncpy(dst->vane, src->vane, sizeof(dst->vane));
 }
 
+void hp_state_copy_cmd(const hp_state_t *src, hp_state_t *dst)
+{
+    copy_cmd_fields(src, dst);
+}
+
 static bool settings_differ(const hp_state_t *wanted, const hp_state_t *current);
 
 static void apply_settings_from_info(const uint8_t *data, int dlen, hp_state_t *st)
 {
     if (dlen < 12) return;
-    note_temp_encoding_from_info(data, dlen);
-
+    s_half_degree = (data[11] != 0x00);
+    s_half_degree_known = true;
     s_unit_isee = (data[4] > 0x08);
 
     hp_state_t unit = s_current;
@@ -365,7 +363,7 @@ static bool send_update(const hp_state_t *wanted, const hp_state_t *current)
 void cn105_init(void)
 {
     uart_config_t cfg = {};
-    cfg.baud_rate  = 2400;
+    cfg.baud_rate  = s_baud_rate;
     cfg.data_bits  = UART_DATA_8_BITS;
     cfg.parity     = UART_PARITY_EVEN;
     cfg.stop_bits  = UART_STOP_BITS_1;
@@ -433,12 +431,11 @@ bool cn105_flush_pending(const hp_state_t *live)
     }
     if (!tx_ready()) return false;
 
-    /* HeatPump::update - vider RX avant UPDATE pour ne pas rater SET_ACK */
     if (live) {
-        while (cn105_poll((hp_state_t *)live)) {}
+        for (int i = 0; i < 8 && cn105_poll((hp_state_t *)live); i++) {}
     } else {
         hp_state_t sink = s_current;
-        while (cn105_poll(&sink)) {}
+        for (int i = 0; i < 8 && cn105_poll(&sink); i++) {}
     }
 
     if (send_update(&s_wanted, &s_current)) {
@@ -459,17 +456,6 @@ bool cn105_request_settings_if_needed(void)
     return true;
 }
 
-static void queue_change(void)
-{
-    cn105_flush_pending(nullptr);
-}
-
-static void retry_flush_if_stale(void)
-{
-    if (settings_differ(&s_wanted, &s_current))
-        queue_change();
-}
-
 const hp_state_t *cn105_wanted_state(void)
 {
     ensure_state_defaults();
@@ -479,13 +465,9 @@ const hp_state_t *cn105_wanted_state(void)
 void cn105_set_power(bool on)
 {
     ensure_state_defaults();
-    if (s_wanted.power_on == on) {
-        retry_flush_if_stale();
-        return;
-    }
+    if (s_wanted.power_on == on) return;
     note_user_cmd();
     s_wanted.power_on = on;
-    queue_change();
 }
 
 void cn105_set_system_mode(bool power_on, const char *mode)
@@ -500,27 +482,12 @@ void cn105_set_system_mode(bool power_on, const char *mode)
     }
     if (mode && mode[0] && strcmp(next.mode, mode) != 0) {
         strncpy(next.mode, mode, sizeof(next.mode));
-        if (strcmp(mode, "FAN") == 0) {
-            fan_only_prepare(&next);
-        }
+        if (strcmp(mode, "FAN") == 0) fan_only_prepare(&next);
         changed = true;
     }
-    if (!changed) {
-        retry_flush_if_stale();
-        return;
-    }
-    if (!settings_differ(&next, &s_wanted)) {
-        retry_flush_if_stale();
-        return;
-    }
+    if (!changed || !settings_differ(&next, &s_wanted)) return;
     note_user_cmd();
     s_wanted = next;
-    queue_change();
-}
-
-void cn105_enter_fan_only(void)
-{
-    cn105_set_system_mode(true, "FAN");
 }
 
 void cn105_set_temp(float temp_c)
@@ -533,39 +500,41 @@ void cn105_set_temp(float temp_c)
         temp_c = (float)(int)lroundf(temp_c);
     }
     ensure_state_defaults();
-    if (fabsf(s_wanted.target_temp - temp_c) <= 0.01f) {
-        retry_flush_if_stale();
-        return;
-    }
+    if (fabsf(s_wanted.target_temp - temp_c) <= 0.01f) return;
     note_user_cmd();
     s_wanted.target_temp = temp_c;
-    queue_change();
 }
 
 void cn105_set_fan(const char *fan)
 {
     ensure_state_defaults();
-    /* Z2M renvoie souvent fan AUTO après fan_only → tue le mode ventilateur */
     if (strcmp(s_wanted.mode, "FAN") == 0 && strcmp(fan, "AUTO") == 0) return;
-    if (strcmp(s_wanted.fan, fan) == 0) {
-        retry_flush_if_stale();
-        return;
-    }
+    if (strcmp(s_wanted.fan, fan) == 0) return;
     note_user_cmd();
     strncpy(s_wanted.fan, fan, sizeof(s_wanted.fan));
-    queue_change();
 }
 
 void cn105_set_vane(const char *vane)
 {
     ensure_state_defaults();
-    if (strcmp(s_wanted.vane, vane) == 0) {
-        retry_flush_if_stale();
-        return;
-    }
+    if (strcmp(s_wanted.vane, vane) == 0) return;
     note_user_cmd();
     strncpy(s_wanted.vane, vane, sizeof(s_wanted.vane));
-    queue_change();
+}
+
+const char *cn105_vane_name(uint8_t idx)
+{
+    if (idx >= CN105_VANE_COUNT) return VANE_S[0];
+    return VANE_S[idx];
+}
+
+uint8_t cn105_vane_index(const char *vane)
+{
+    if (!vane) return 0;
+    for (int i = 0; i < CN105_VANE_COUNT; i++) {
+        if (strcmp(vane, VANE_S[i]) == 0) return (uint8_t)i;
+    }
+    return 0;
 }
 
 static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)

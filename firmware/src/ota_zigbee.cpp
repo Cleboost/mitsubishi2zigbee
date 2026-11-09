@@ -1,3 +1,4 @@
+#include "device_manifest.h"
 #include "ota_zigbee.h"
 
 #include "esp_check.h"
@@ -109,13 +110,6 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
     return ret;
 }
 
-static esp_err_t ota_query_image_resp_handler(
-    esp_zb_zcl_ota_upgrade_query_image_resp_message_t message)
-{
-    (void)message;
-    return ESP_OK;
-}
-
 esp_err_t ota_zigbee_action_handler(esp_zb_core_action_callback_id_t callback_id,
                                     const void *message)
 {
@@ -123,8 +117,7 @@ esp_err_t ota_zigbee_action_handler(esp_zb_core_action_callback_id_t callback_id
     case ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID:
         return ota_status_handler(*(const esp_zb_zcl_ota_upgrade_value_message_t *)message);
     case ESP_ZB_CORE_OTA_UPGRADE_QUERY_IMAGE_RESP_CB_ID:
-        return ota_query_image_resp_handler(
-            *(const esp_zb_zcl_ota_upgrade_query_image_resp_message_t *)message);
+        return ESP_OK;
     default:
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -168,8 +161,8 @@ static esp_err_t ota_zigbee_add_client_cluster(esp_zb_cluster_list_t *list)
 
 static esp_zb_cluster_list_t *create_ota_cluster_list(void)
 {
-    static const char *manuf = "\x0A""Mitsubishi";
-    static const char *model = "\x0C""MZ-Zigbee-C6";
+    static const char *manuf = ZB_MANUFACTURER_NAME;
+    static const char *model = ZB_MODEL_ID;
 
     esp_zb_cluster_list_t *list = esp_zb_zcl_cluster_list_create();
 

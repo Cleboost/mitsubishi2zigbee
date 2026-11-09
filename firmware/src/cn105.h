@@ -23,6 +23,8 @@ extern "C" {
 #define CN105_TX_PIN      4    // ESP TX → level shifter → CN105 pin 5 (unit RX)
 #define CN105_RX_PIN      5    // ESP RX ← level shifter ← CN105 pin 4 (unit TX)
 
+#define CN105_VANE_COUNT  7
+
 typedef struct {
     bool  connected;
     bool  power_on;
@@ -32,6 +34,8 @@ typedef struct {
     char  vane[8];         // "AUTO","1".."5","SWING"
     float room_temp;
 } hp_state_t;
+
+void hp_state_copy_cmd(const hp_state_t *src, hp_state_t *dst);
 
 void cn105_init(void);
 void cn105_connect(void);
@@ -45,10 +49,11 @@ void cn105_rotate_baud_if_silent(void);
 
 void cn105_set_power(bool on);
 void cn105_set_system_mode(bool power_on, const char *mode);
-void cn105_enter_fan_only(void);
 void cn105_set_temp(float temp_c);
 void cn105_set_fan(const char *fan);
 void cn105_set_vane(const char *vane);
+uint8_t cn105_vane_index(const char *vane);
+const char *cn105_vane_name(uint8_t idx);
 const hp_state_t *cn105_wanted_state(void);
 
 #ifdef __cplusplus

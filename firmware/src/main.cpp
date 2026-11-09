@@ -20,6 +20,7 @@
 #include "zcl/esp_zigbee_zcl_command.h"
 
 #include "cn105.h"
+#include "device_manifest.h"
 #include "ota_zigbee.h"
 #include <string.h>
 
@@ -90,28 +91,17 @@ static void led_task(void *arg)
     }
 }
 
-#define ENDPOINT_ID       1
-#define CHANNEL_MASK      ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
-
-#define MANUFACTURER_NAME "\x0A""Mitsubishi"
-#define MODEL_ID          "\x0C""MZ-Zigbee-C6"
-
-#define SETPOINT_DEFAULT  2100
-#define SETPOINT_MIN      1600
-#define SETPOINT_MAX      3100
-
-#define MITSU_EXT_CLUSTER_ID   0xFF00
-#define VANE_ATTR_ID           0x0000
+#define CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
 
 static hp_state_t g_hp = {};
 static uint8_t    g_vane_attr = 0;
 static volatile bool g_syncing_zigbee = false;
 
 typedef enum {
-    HP_CMD_NONE = 0,
     HP_CMD_SYSTEM_MODE,
     HP_CMD_SETPOINT,
     HP_CMD_FAN,
+    HP_CMD_VANE,
 } hp_cmd_kind_t;
 
 typedef struct {
@@ -122,174 +112,74 @@ typedef struct {
 
 static QueueHandle_t g_hp_cmd_q;
 
-static void apply_system_mode(uint8_t sys_mode)
-{
-    switch (sys_mode) {
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF:
-        cn105_set_power(false);
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_HEAT:
-        cn105_set_system_mode(true, "HEAT");
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_COOL:
-        cn105_set_system_mode(true, "COOL");
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_AUTO:
-        cn105_set_system_mode(true, "AUTO");
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_FAN_ONLY:
-        cn105_enter_fan_only();
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_DRY:
-        cn105_set_system_mode(true, "DRY");
-        break;
-    default:
-        ESP_LOGW(TAG, "unsupported system_mode 0x%02x", sys_mode);
-        break;
-    }
-}
+typedef struct {
+    uint8_t     zcl;
+    bool        power;
+    const char *mode;
+} zcl_mode_map_t;
 
-static const char *const VANE_NAMES[] = {"AUTO","1","2","3","4","5","SWING"};
-#define VANE_COUNT 7
+static const zcl_mode_map_t ZCL_MODES[] = {
+    {ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF,      false, "HEAT"},
+    {ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_HEAT,     true,  "HEAT"},
+    {ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_COOL,     true,  "COOL"},
+    {ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_AUTO,     true,  "AUTO"},
+    {ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_FAN_ONLY, true,  "FAN"},
+    {ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_DRY,      true,  "DRY"},
+};
 
-static void apply_vane(uint8_t idx)
-{
-    if (idx < VANE_COUNT) cn105_set_vane(VANE_NAMES[idx]);
-}
+typedef struct {
+    uint8_t     zcl;
+    const char *fan;
+} zcl_fan_map_t;
 
-static uint8_t hp_to_vane_idx(const hp_state_t *st)
-{
-    for (int i = 0; i < VANE_COUNT; i++)
-        if (strcmp(st->vane, VANE_NAMES[i]) == 0) return (uint8_t)i;
-    return 0;
-}
+static const zcl_fan_map_t ZCL_FANS[] = {
+    {ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW,    "1"},
+    {ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_MEDIUM, "3"},
+    {ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_HIGH,   "4"},
+    {ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_ON,     "4"},
+    {ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SMART,  "QUIET"},
+    {ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO,   "AUTO"},
+};
 
-static void apply_fan_mode(uint8_t fan_mode)
+static void apply_zcl_mode(uint8_t zcl)
 {
-    const hp_state_t *w = cn105_wanted_state();
-    if (w && strcmp(w->mode, "FAN") == 0 &&
-        fan_mode == ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO) {
+    for (size_t i = 0; i < sizeof(ZCL_MODES) / sizeof(ZCL_MODES[0]); i++) {
+        if (ZCL_MODES[i].zcl != zcl) continue;
+        if (!ZCL_MODES[i].power) cn105_set_power(false);
+        else cn105_set_system_mode(true, ZCL_MODES[i].mode);
         return;
     }
-    switch (fan_mode) {
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW:    cn105_set_fan("1");     break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_MEDIUM: cn105_set_fan("3");     break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_HIGH:   cn105_set_fan("4");     break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_ON:     cn105_set_fan("4");     break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SMART:  cn105_set_fan("QUIET"); break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO:
-    default:                                     cn105_set_fan("AUTO");  break;
-    }
+    ESP_LOGW(TAG, "unsupported system_mode 0x%02x", zcl);
 }
 
-static uint8_t hp_to_system_mode(const hp_state_t *st)
+static void apply_zcl_fan(uint8_t zcl)
 {
-    if (!st->power_on)               return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
-    if (strcmp(st->mode, "HEAT")==0) return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_HEAT;
-    if (strcmp(st->mode, "COOL")==0) return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_COOL;
-    if (strcmp(st->mode, "DRY")==0)  return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_DRY;
-    if (strcmp(st->mode, "FAN")==0)  return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_FAN_ONLY;
+    for (size_t i = 0; i < sizeof(ZCL_FANS) / sizeof(ZCL_FANS[0]); i++) {
+        if (ZCL_FANS[i].zcl == zcl) {
+            cn105_set_fan(ZCL_FANS[i].fan);
+            return;
+        }
+    }
+    cn105_set_fan("AUTO");
+}
+
+static uint8_t zcl_mode_from_hp(const hp_state_t *st)
+{
+    if (!st->power_on) return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
+    for (size_t i = 1; i < sizeof(ZCL_MODES) / sizeof(ZCL_MODES[0]); i++) {
+        if (strcmp(st->mode, ZCL_MODES[i].mode) == 0) return ZCL_MODES[i].zcl;
+    }
     return ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_AUTO;
 }
 
-static uint8_t hp_to_fan_mode(const hp_state_t *st)
+static uint8_t zcl_fan_from_hp(const hp_state_t *st)
 {
-    if (strcmp(st->fan, "QUIET")==0) return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SMART;
-    if (strcmp(st->fan, "1")==0)     return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW;
-    if (strcmp(st->fan, "2")==0)     return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW;
-    if (strcmp(st->fan, "3")==0)     return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_MEDIUM;
-    if (strcmp(st->fan, "4")==0)     return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_HIGH;
+    if (strcmp(st->fan, "2") == 0) return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW;
+    for (size_t i = 0; i < sizeof(ZCL_FANS) / sizeof(ZCL_FANS[0]); i++) {
+        if (strcmp(st->fan, ZCL_FANS[i].fan) == 0) return ZCL_FANS[i].zcl;
+    }
     return ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO;
 }
-
-static void push_state_to_zigbee(const hp_state_t *st)
-{
-    int16_t local_temp = (int16_t)(st->room_temp * 100.0f);
-    int16_t setpoint   = (int16_t)(st->target_temp * 100.0f);
-    uint8_t sys_mode   = hp_to_system_mode(st);
-    uint8_t fan_mode   = hp_to_fan_mode(st);
-    const bool cmd_pending = cn105_cmd_pending();
-    const hp_state_t *w = cn105_wanted_state();
-    const bool vane_cn105_synced = w && strcmp(w->vane, st->vane) == 0;
-
-    g_syncing_zigbee = true;
-    esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
-        ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, &local_temp, false);
-    if (!cmd_pending) {
-        esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
-            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID, &setpoint, false);
-        esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
-            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID, &setpoint, false);
-        esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
-            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, &sys_mode, false);
-        esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
-            ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID, &fan_mode, false);
-        /* Ne pas écraser vane ZCL tant que CN105 n'a pas appliqué (sinon write HA perdu) */
-        if (vane_cn105_synced) {
-            g_vane_attr = hp_to_vane_idx(st);
-            esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
-                MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                VANE_ATTR_ID, &g_vane_attr, false);
-        }
-    }
-    esp_zb_lock_release();
-    g_syncing_zigbee = false;
-}
-
-static void g_hp_mirror_system_mode(uint8_t sys_mode)
-{
-    switch (sys_mode) {
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF:
-        g_hp.power_on = false;
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_HEAT:
-        g_hp.power_on = true;
-        strncpy(g_hp.mode, "HEAT", sizeof(g_hp.mode));
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_COOL:
-        g_hp.power_on = true;
-        strncpy(g_hp.mode, "COOL", sizeof(g_hp.mode));
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_AUTO:
-        g_hp.power_on = true;
-        strncpy(g_hp.mode, "AUTO", sizeof(g_hp.mode));
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_FAN_ONLY:
-        g_hp.power_on = true;
-        strncpy(g_hp.mode, "FAN", sizeof(g_hp.mode));
-        if (strcmp(g_hp.fan, "AUTO") == 0) strncpy(g_hp.fan, "3", sizeof(g_hp.fan));
-        if (strcmp(g_hp.vane, "AUTO") == 0 || strcmp(g_hp.vane, "SWING") == 0 ||
-            g_hp.vane[0] < '1' || g_hp.vane[0] > '5')
-            strncpy(g_hp.vane, "1", sizeof(g_hp.vane));
-        break;
-    case ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_DRY:
-        g_hp.power_on = true;
-        strncpy(g_hp.mode, "DRY", sizeof(g_hp.mode));
-        break;
-    default:
-        break;
-    }
-}
-
-static void g_hp_mirror_fan_mode(uint8_t fan_mode)
-{
-    switch (fan_mode) {
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_LOW:    strncpy(g_hp.fan, "1", sizeof(g_hp.fan)); break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_MEDIUM: strncpy(g_hp.fan, "3", sizeof(g_hp.fan)); break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_HIGH:
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_ON:     strncpy(g_hp.fan, "4", sizeof(g_hp.fan)); break;
-    case ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SMART:  strncpy(g_hp.fan, "QUIET", sizeof(g_hp.fan)); break;
-    default:                                     strncpy(g_hp.fan, "AUTO", sizeof(g_hp.fan)); break;
-    }
-}
-
-static void handle_vane_write(uint8_t idx);
 
 static void hp_queue_cmd(hp_cmd_kind_t kind, uint8_t u8, int16_t i16)
 {
@@ -300,46 +190,73 @@ static void hp_queue_cmd(hp_cmd_kind_t kind, uint8_t u8, int16_t i16)
     }
 }
 
-static void hp_drain_cmd_queue(void)
+static void push_state_to_zigbee(const hp_state_t *st)
 {
-    hp_cmd_t batch[16];
-    int n = 0;
-    while (g_hp_cmd_q && n < 16 && xQueueReceive(g_hp_cmd_q, &batch[n], 0) == pdTRUE) {
-        n++;
-    }
-    for (int pass = 0; pass < 2; pass++) {
-        for (int i = 0; i < n; i++) {
-            const hp_cmd_t *cmd = &batch[i];
-            const bool is_mode = (cmd->kind == HP_CMD_SYSTEM_MODE);
-            if (pass == 0 ? !is_mode : is_mode) continue;
+    int16_t local_temp = (int16_t)(st->room_temp * 100.0f);
+    int16_t setpoint   = (int16_t)(st->target_temp * 100.0f);
+    uint8_t sys_mode   = zcl_mode_from_hp(st);
+    uint8_t fan_mode   = zcl_fan_from_hp(st);
+    const bool cmd_pending = cn105_cmd_pending();
+    const hp_state_t *w = cn105_wanted_state();
+    const bool vane_cn105_synced = strcmp(w->vane, st->vane) == 0;
 
-            switch (cmd->kind) {
-            case HP_CMD_SYSTEM_MODE:
-                apply_system_mode(cmd->u8);
-                g_hp_mirror_system_mode(cmd->u8);
-                break;
-            case HP_CMD_SETPOINT:
-                cn105_set_temp(cmd->i16 / 100.0f);
-                g_hp.target_temp = cmd->i16 / 100.0f;
-                break;
-            case HP_CMD_FAN:
-                apply_fan_mode(cmd->u8);
-                g_hp_mirror_fan_mode(cmd->u8);
-                break;
-            default:
-                break;
-            }
+    g_syncing_zigbee = true;
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+        ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, &local_temp, false);
+    if (!cmd_pending) {
+        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID, &setpoint, false);
+        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID, &setpoint, false);
+        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, &sys_mode, false);
+        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+            ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID, &fan_mode, false);
+        /* Ne pas écraser vane ZCL tant que CN105 n'a pas appliqué (sinon write HA perdu) */
+        if (vane_cn105_synced) {
+            g_vane_attr = cn105_vane_index(st->vane);
+            esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+                MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                VANE_ATTR_ID, &g_vane_attr, false);
         }
     }
-    if (n > 0) {
-        cn105_flush_pending(&g_hp);
+    esp_zb_lock_release();
+    g_syncing_zigbee = false;
+}
+
+static void hp_drain_cmd_queue(void)
+{
+    hp_cmd_t mode = {}, setpt = {}, fan = {}, vane = {};
+    bool have_mode = false, have_setpt = false, have_fan = false, have_vane = false;
+    hp_cmd_t cmd;
+
+    while (g_hp_cmd_q && xQueueReceive(g_hp_cmd_q, &cmd, 0) == pdTRUE) {
+        switch (cmd.kind) {
+        case HP_CMD_SYSTEM_MODE: mode = cmd; have_mode = true; break;
+        case HP_CMD_SETPOINT:    setpt = cmd; have_setpt = true; break;
+        case HP_CMD_FAN:         fan = cmd; have_fan = true; break;
+        case HP_CMD_VANE:        vane = cmd; have_vane = true; break;
+        }
+    }
+    if (have_mode) apply_zcl_mode(mode.u8);
+    if (have_setpt) cn105_set_temp(setpt.i16 / 100.0f);
+    if (have_fan) apply_zcl_fan(fan.u8);
+    if (have_vane && vane.u8 < CN105_VANE_COUNT) {
+        g_vane_attr = vane.u8;
+        cn105_set_vane(cn105_vane_name(vane.u8));
     }
 }
 
 static signed int mitsu_ext_check_value(uint16_t attr_id, uint8_t endpoint, uint8_t *value)
 {
     (void)endpoint;
-    if (attr_id == VANE_ATTR_ID && value && *value >= VANE_COUNT) {
+    if (attr_id == VANE_ATTR_ID && value && *value >= CN105_VANE_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
@@ -350,8 +267,9 @@ static void mitsu_ext_write_attr(uint8_t endpoint, uint16_t attr_id, uint8_t *ne
     (void)endpoint;
     (void)manuf_code;
     if (g_syncing_zigbee || !new_value) return;
-    if (attr_id == VANE_ATTR_ID) {
-        handle_vane_write(*new_value);
+    if (attr_id == VANE_ATTR_ID && *new_value < CN105_VANE_COUNT) {
+        g_vane_attr = *new_value;
+        hp_queue_cmd(HP_CMD_VANE, *new_value, 0);
     }
 }
 
@@ -366,15 +284,6 @@ static void register_mitsu_ext_handlers(void)
     ESP_ERROR_CHECK(esp_zb_zcl_custom_cluster_handlers_update(h));
 }
 
-static void handle_vane_write(uint8_t idx)
-{
-    if (idx >= VANE_COUNT) return;
-    g_vane_attr = idx;
-    apply_vane(idx);
-    strncpy(g_hp.vane, VANE_NAMES[idx], sizeof(g_hp.vane));
-    cn105_flush_pending(&g_hp);
-}
-
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                                    const void *message)
 {
@@ -387,7 +296,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     const esp_zb_zcl_set_attr_value_message_t *m =
         (const esp_zb_zcl_set_attr_value_message_t *)message;
     if (m->info.status != ESP_ZB_ZCL_STATUS_SUCCESS) return ESP_OK;
-    if (m->info.dst_endpoint != ENDPOINT_ID) return ESP_OK;
+    if (m->info.dst_endpoint != HP_ENDPOINT_ID) return ESP_OK;
 
     uint16_t cluster = m->info.cluster;
     uint16_t attr    = m->attribute.id;
@@ -398,18 +307,14 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         return ESP_OK;
     }
 
-    /* vane 0xFF00 : mitsu_ext_write_attr() */
-
     if (g_syncing_zigbee) {
+        const hp_state_t *w = cn105_wanted_state();
         if (cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL &&
             attr == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
-            uint8_t v = *(uint8_t *)val;
-            if (v == hp_to_fan_mode(&g_hp)) return ESP_OK;
-        } else if (cluster == ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT) {
-            if (attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID) {
-                uint8_t v = *(uint8_t *)val;
-                if (v == hp_to_system_mode(&g_hp)) return ESP_OK;
-            }
+            if (*(uint8_t *)val == zcl_fan_from_hp(w)) return ESP_OK;
+        } else if (cluster == ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT &&
+                   attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID) {
+            if (*(uint8_t *)val == zcl_mode_from_hp(w)) return ESP_OK;
         } else {
             return ESP_OK;
         }
@@ -463,7 +368,7 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         bool in_network = (addr != 0xFFFE && addr != 0xFFFF);
         if (in_network) {
             g_led_state = LED_CONNECTED;
-            esp_zb_bdb_finding_binding_start_target(ENDPOINT_ID, 300);
+            esp_zb_bdb_finding_binding_start_target(HP_ENDPOINT_ID, 300);
         } else {
             g_led_state = LED_FOUND;
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_commissioning_cb,
@@ -491,9 +396,9 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
     };
     esp_zb_attribute_list_t *basic = esp_zb_basic_cluster_create(&basic_cfg);
     esp_zb_basic_cluster_add_attr(basic,
-        ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *)MANUFACTURER_NAME);
+        ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *)ZB_MANUFACTURER_NAME);
     esp_zb_basic_cluster_add_attr(basic,
-        ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *)MODEL_ID);
+        ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *)ZB_MODEL_ID);
     esp_zb_basic_cluster_add_attr(basic,
         ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, (void *)FW_VERSION_STRING);
     esp_zb_cluster_list_add_basic_cluster(list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -503,15 +408,15 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         esp_zb_identify_cluster_create(&id_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_thermostat_cluster_cfg_t th_cfg = {
-        .local_temperature             = 2100,
-        .occupied_cooling_setpoint     = SETPOINT_DEFAULT,
-        .occupied_heating_setpoint     = SETPOINT_DEFAULT,
+        .local_temperature             = HP_SETPOINT_DEFAULT,
+        .occupied_cooling_setpoint     = HP_SETPOINT_DEFAULT,
+        .occupied_heating_setpoint     = HP_SETPOINT_DEFAULT,
         .control_sequence_of_operation =
             ESP_ZB_ZCL_THERMOSTAT_CONTROL_SEQ_OF_OPERATION_COOLING_AND_HEATING_4_PIPES,
         .system_mode                   = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF,
     };
     esp_zb_attribute_list_t *th = esp_zb_thermostat_cluster_create(&th_cfg);
-    int16_t lim_min = SETPOINT_MIN, lim_max = SETPOINT_MAX;
+    int16_t lim_min = HP_SETPOINT_MIN, lim_max = HP_SETPOINT_MAX;
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, &lim_min);
     esp_zb_thermostat_cluster_add_attr(th,
@@ -549,11 +454,8 @@ static void hp_sync_task(void *arg)
 
         hp_drain_cmd_queue();
 
-        bool changed = false;
-        for (int i = 0; i < 10; i++) {
-            if (cn105_poll(&g_hp)) changed = true;
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
+        bool changed = cn105_poll(&g_hp);
+        while (cn105_poll(&g_hp)) changed = true;
 
         if (!g_hp.connected) {
             if (now - last_connect_ms >= 3000) {
@@ -566,9 +468,7 @@ static void hp_sync_task(void *arg)
                 last_warn_ms = now;
             }
         } else {
-            if (cn105_request_settings_if_needed()) {
-                /* attend INFO settings */
-            } else if (!cn105_flush_pending(&g_hp)) {
+            if (!cn105_request_settings_if_needed() && !cn105_flush_pending(&g_hp)) {
                 if (cycle % 2 == 0) cn105_request_settings();
                 else                  cn105_request_room_temp();
                 cycle++;
@@ -577,6 +477,7 @@ static void hp_sync_task(void *arg)
 
         g_cn105_linked = g_hp.connected;
         if (changed) push_state_to_zigbee(&g_hp);
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -593,7 +494,7 @@ static void esp_zb_task(void *pvParameters)
 
     esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
     esp_zb_endpoint_config_t ep_cfg = {
-        .endpoint           = ENDPOINT_ID,
+        .endpoint           = HP_ENDPOINT_ID,
         .app_profile_id     = ESP_ZB_AF_HA_PROFILE_ID,
         .app_device_id      = ESP_ZB_HA_THERMOSTAT_DEVICE_ID,
         .app_device_version = 0,

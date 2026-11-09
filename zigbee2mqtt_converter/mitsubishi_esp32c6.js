@@ -8,6 +8,7 @@ const ea = exposes.access;
 
 const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
 const MITSU_EXT_CLUSTER = 'manuSpecificMitsubishiHvac';
+const HVAC_CLUSTERS = ['hvacThermostat', 'hvacFanCtrl', MITSU_EXT_CLUSTER];
 
 function swBuildIdToFileVersion(swBuildId) {
     if (!swBuildId || typeof swBuildId !== 'string') return null;
@@ -16,6 +17,17 @@ function swBuildIdToFileVersion(swBuildId) {
     const nums = parts.map((p) => parseInt(p, 10));
     if (nums.some((n) => Number.isNaN(n))) return null;
     return (nums[0] << 16) | (nums[1] << 8) | nums[2];
+}
+
+function roundHalfDeg(value) {
+    return Math.round(Number(value) * 2) / 2;
+}
+
+function setpointState(value) {
+    return {
+        occupied_heating_setpoint: value,
+        current_heating_setpoint: value,
+    };
 }
 
 const fzFirmware = {
@@ -51,26 +63,17 @@ const fzSetpoint = {
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg) => {
         if (msg.data.occupiedHeatingSetpoint === undefined) return;
-        const value = Math.round(Number(msg.data.occupiedHeatingSetpoint)) / 100;
-        return {
-            occupied_heating_setpoint: value,
-            current_heating_setpoint: value,
-        };
+        const value = roundHalfDeg(Number(msg.data.occupiedHeatingSetpoint) / 100);
+        return setpointState(value);
     },
 };
 
 const tzSetpoint = {
     key: ['occupied_heating_setpoint'],
     convertSet: async (entity, key, value, meta) => {
-        const rounded = Math.round(Number(value) * 2) / 2;
-        const centi = Math.round(rounded * 100);
-        await entity.write('hvacThermostat', {occupiedHeatingSetpoint: centi});
-        return {
-            state: {
-                occupied_heating_setpoint: rounded,
-                current_heating_setpoint: rounded,
-            },
-        };
+        const rounded = roundHalfDeg(value);
+        await entity.write('hvacThermostat', {occupiedHeatingSetpoint: Math.round(rounded * 100)});
+        return {state: setpointState(rounded)};
     },
     convertGet: async (entity, key, meta) => {
         await entity.read('hvacThermostat', ['occupiedHeatingSetpoint']);
@@ -125,7 +128,7 @@ module.exports = {
     ],
     configure: async (device, coordinatorEndpoint) => {
         const ep = device.getEndpoint(1);
-        for (const cluster of ['hvacThermostat', 'hvacFanCtrl', MITSU_EXT_CLUSTER]) {
+        for (const cluster of HVAC_CLUSTERS) {
             try {
                 await ep.bind(cluster, coordinatorEndpoint);
             } catch {}
