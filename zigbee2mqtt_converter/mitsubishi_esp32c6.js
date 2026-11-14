@@ -69,8 +69,8 @@ const tzVane = {
 const definition = {
   zigbeeModel: ["MZ-Zigbee-C6"],
   model: "MZ-Zigbee-C6",
-  vendor: "Mitsubishi",
-  description: "Mitsubishi HVAC — passerelle ESP32-C6 Zigbee",
+  vendor: "Cleboost",
+  description: "Cleboost — passerelle ESP32-C6 Zigbee (Mitsubishi CN105)",
   ota: {
     manufacturerCode: 0x1337,
     imageType: 0x0001,

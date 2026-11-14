@@ -77,8 +77,8 @@ static void led_task(void *arg)
 #define ENDPOINT_ID       1
 #define CHANNEL_MASK      ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
 
-#define MANUFACTURER_NAME "\x0A""Mitsubishi"
-#define MODEL_ID          "\x0C""MZ-Zigbee-C6"
+#define MANUFACTURER_NAME "\x0A""Cleboost"
+#define MODEL_ID          "\x0C""Mitsubishi2Zigbee"
 
 #define SETPOINT_DEFAULT  2100
 #define SETPOINT_MIN      1600

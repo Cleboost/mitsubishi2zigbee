@@ -71,7 +71,7 @@ pio device monitor         # serial logs (115200 baud)
    - Fast blue — searching for a network
    - Slow blue — network found, waiting to join
    - Green pulse — joined successfully
-4. The device advertises as **`MZ-Zigbee-C6`** (vendor: Mitsubishi).
+4. The device advertises as **`MZ-Zigbee-C6`** (vendor: Cleboost).
 
 ## Zigbee2MQTT integration
 
