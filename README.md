@@ -25,7 +25,7 @@ Inspired by [gysmo38/mitsubishi2MQTT](https://github.com/gysmo38/mitsubishi2MQTT
 | **Setpoint** | 16–31 °C in 1 °C steps |
 | **Fan speed** | Auto, Quiet (Smart), Low, Medium, High |
 | **Vane** | Auto, positions 1–5, Swing |
-| **Telemetry** | Room temperature (unit sensor), compressor running state |
+| **Telemetry** | Room temperature, compressor run state → HA `running_state` (heat + idle when setpoint reached, same as mitsubishi2MQTT) |
 | **Status LED** (WS2812) | Fast blue — scanning · Slow blue — network found, not paired · Green pulse — paired |
 
 ## Hardware

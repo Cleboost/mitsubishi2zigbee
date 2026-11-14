@@ -7,6 +7,62 @@ const ea = exposes.access;
 
 const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
 
+const OPERATING_ATTR = '0x0401';
+
+/** ZCL systemMode → string (thermostat cluster). */
+const SYSTEM_MODE_FROM_ZCL = {
+  0: 'off',
+  1: 'auto',
+  3: 'cool',
+  4: 'heat',
+  7: 'fan_only',
+  8: 'dry',
+};
+
+/**
+ * Same rules as gysmo38/mitsubishi2MQTT hpGetAction() — maps to Z2M running_state.
+ * @see https://github.com/gysmo38/mitsubishi2MQTT/blob/master/src/mitsubishi2mqtt/mitsubishi2mqtt.ino
+ */
+function runningStateFromMode(systemMode, operating) {
+  const mode =
+    typeof systemMode === 'number'
+      ? SYSTEM_MODE_FROM_ZCL[systemMode]
+      : systemMode;
+  if (mode === 'off') return 'idle';
+  if (mode === 'fan_only') return 'fan_only';
+  if (!operating) return 'idle';
+  if (mode === 'auto') return 'idle';
+  if (mode === 'cool') return 'cool';
+  if (mode === 'heat') return 'heat';
+  if (mode === 'dry') return 'dry';
+  return 'idle';
+}
+
+function updateRunningStateMeta(meta, msg) {
+  if (!meta.mitsuHp) meta.mitsuHp = {};
+  if (msg.data.systemMode !== undefined) {
+    meta.mitsuHp.systemMode = msg.data.systemMode;
+  }
+  if (msg.data[OPERATING_ATTR] !== undefined) {
+    meta.mitsuHp.operating = msg.data[OPERATING_ATTR] === 1;
+  }
+}
+
+function publishRunningState(meta) {
+  const {systemMode, operating} = meta.mitsuHp ?? {};
+  if (systemMode === undefined || operating === undefined) return null;
+  return {running_state: runningStateFromMode(systemMode, operating)};
+}
+
+const fzRunningState = {
+  cluster: 'hvacThermostat',
+  type: ['attributeReport', 'readResponse'],
+  convert: (model, msg, publish, options, meta) => {
+    updateRunningStateMeta(meta, msg);
+    return publishRunningState(meta);
+  },
+};
+
 function swBuildIdToFileVersion(swBuildId) {
     if (!swBuildId || typeof swBuildId !== 'string') return null;
     const parts = swBuildId.split('.');
@@ -76,7 +132,7 @@ const definition = {
     imageType: 0x0001,
   },
   endpoint: (device) => ({default: 1, ota: 2}),
-  fromZigbee: [fzFirmware, fz.thermostat, fz.fan, fzVane],
+  fromZigbee: [fzFirmware, fzRunningState, fz.thermostat, fz.fan, fzVane],
   toZigbee: [
     tz.thermostat_system_mode,
     tz.thermostat_occupied_heating_setpoint,
@@ -90,7 +146,8 @@ const definition = {
       .withSystemMode(["off", "heat", "cool", "auto", "fan_only", "dry"])
       .withSetpoint("occupied_heating_setpoint", 16, 31, 1)
       .withLocalTemperature()
-      .withFanMode(["auto", "low", "medium", "high", "smart"]),
+      .withFanMode(["auto", "low", "medium", "high", "smart"])
+      .withRunningState(["idle", "heat", "cool", "dry", "fan_only"], ea.STATE),
     e
       .enum("vane_position", ea.ALL, VANE_OPTIONS)
       .withDescription("Inclinaison des pales (AUTO, 1-5, SWING)"),
@@ -109,7 +166,18 @@ const definition = {
       "localTemp",
       "occupiedHeatingSetpoint",
       "systemMode",
+      OPERATING_ATTR,
     ]);
+    try {
+      await ep.configureReporting("hvacThermostat", [
+        {
+          attribute: {ID: 0x0401, type: 0x20},
+          minimumReportInterval: 5,
+          maximumReportInterval: 60,
+          reportableChange: 1,
+        },
+      ]);
+    } catch {}
     await ep.read("hvacFanCtrl", ["fanMode"]);
     const otaEp = device.getEndpoint(2);
     if (otaEp) {

@@ -84,10 +84,13 @@ static void led_task(void *arg)
 #define SETPOINT_MIN      1600
 #define SETPOINT_MAX      3100
 
-#define VANE_ATTR_ID  0x0400
+#define VANE_ATTR_ID       0x0400
+/** CN105 compressor active (INFO 0x06 data[4]); 0=idle, 1=running — mirrors HeatPump::operating */
+#define OPERATING_ATTR_ID  0x0401
 
 static hp_state_t g_hp = {};
 static uint8_t    g_vane_attr = 0;
+static uint8_t    g_operating_attr = 0;
 
 static void apply_system_mode(uint8_t sys_mode)
 {
@@ -191,6 +194,10 @@ static void push_state_to_zigbee(const hp_state_t *st)
     esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
         ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         VANE_ATTR_ID, &g_vane_attr, false);
+    g_operating_attr = st->operating ? 1 : 0;
+    esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
+        ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        OPERATING_ATTR_ID, &g_operating_attr, false);
     esp_zb_lock_release();
 }
 
@@ -325,6 +332,7 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max);
     esp_zb_thermostat_cluster_add_attr(th, VANE_ATTR_ID, &g_vane_attr);
+    esp_zb_thermostat_cluster_add_attr(th, OPERATING_ATTR_ID, &g_operating_attr);
     esp_zb_cluster_list_add_thermostat_cluster(list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {
