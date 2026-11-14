@@ -22,7 +22,7 @@ Inspired by [gysmo38/mitsubishi2MQTT](https://github.com/gysmo38/mitsubishi2MQTT
 | Category | Details |
 | --- | --- |
 | **Modes** | Off, Heat, Cool, Auto, Fan only, Dry |
-| **Setpoint** | 16–31 °C in 0.5 °C steps |
+| **Setpoint** | 16–31 °C in 1 °C steps |
 | **Fan speed** | Auto, Quiet (Smart), Low, Medium, High |
 | **Vane** | Auto, positions 1–5, Swing |
 | **Telemetry** | Room temperature (unit sensor), compressor running state |

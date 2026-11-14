@@ -113,13 +113,11 @@ static void send_set(uint8_t control, uint8_t power, uint8_t mode,
     if (control & CTRL_POWER) packet[8]  = power;
     if (control & CTRL_MODE)  packet[9]  = mode;
     if (control & CTRL_TEMP) {
-        // Legacy encoding: 31 - integer temp at byte 10
+        // Integer °C only (byte 10); byte 19 left 0 — half-degree field confuses many units
         int t = (int)lroundf(temp);
         if (t < 16) t = 16;
         if (t > 31) t = 31;
         packet[10] = 31 - t;
-        // 0.5°C encoding: (temp*2)+128 at byte 19 (newer units)
-        packet[19] = (uint8_t)((int)lroundf(temp * 2.0f) + 128);
     }
     if (control & CTRL_FAN)  packet[11] = fan;
 
@@ -143,9 +141,9 @@ void cn105_set_temp(float temp_c)
 {
     if (temp_c < 16.0f) temp_c = 16.0f;
     if (temp_c > 31.0f) temp_c = 31.0f;
-    temp_c = roundf(temp_c * 2.0f) / 2.0f;
+    temp_c = roundf(temp_c);
     send_set(CTRL_TEMP, 0, 0, temp_c, 0);
-    ESP_LOGI(TAG, "→ SET temp=%.1f", temp_c);
+    ESP_LOGI(TAG, "→ SET temp=%.0f", temp_c);
 }
 
 void cn105_set_fan(const char *fan)
@@ -180,8 +178,9 @@ static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
         if (strcmp(mode, st->mode) != 0) { strncpy(st->mode, mode, sizeof(st->mode)); changed = true; }
 
         float temp;
-        if (data[11] != 0x00) temp = (data[11] - 128) / 2.0f;   // 0.5°C mode
-        else                  temp = 31.0f - data[5];           // legacy mode
+        if (data[11] != 0x00) temp = (data[11] - 128) / 2.0f;
+        else                  temp = 31.0f - data[5];
+        temp = roundf(temp);
         if (fabsf(temp - st->target_temp) > 0.01f) { st->target_temp = temp; changed = true; }
 
         const char *fan = byte_to_str(data[6], FAN_B, FAN_S, 6);

@@ -25,7 +25,7 @@ typedef struct {
     bool  connected;
     bool  power_on;
     char  mode[8];         // "HEAT","DRY","COOL","FAN","AUTO"
-    float target_temp;     // setpoint °C, 16.0–31.0, 0.5 step
+    float target_temp;     // setpoint °C, 16–31, 1 °C step
     char  fan[8];          // "AUTO","QUIET","1","2","3","4"
     char  vane[8];         // "AUTO","1".."5","SWING"
     float room_temp;

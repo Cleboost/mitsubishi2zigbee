@@ -167,7 +167,7 @@ static uint8_t hp_to_fan_mode(const hp_state_t *st)
 static void push_state_to_zigbee(const hp_state_t *st)
 {
     int16_t local_temp = (int16_t)(st->room_temp * 100.0f);
-    int16_t setpoint   = (int16_t)(st->target_temp * 100.0f);
+    int16_t setpoint   = (int16_t)(lroundf(st->target_temp) * 100);
     uint8_t sys_mode   = hp_to_system_mode(st);
     uint8_t fan_mode   = hp_to_fan_mode(st);
 

@@ -88,7 +88,7 @@ const definition = {
     e
       .climate()
       .withSystemMode(["off", "heat", "cool", "auto", "fan_only", "dry"])
-      .withSetpoint("occupied_heating_setpoint", 16, 31, 0.5)
+      .withSetpoint("occupied_heating_setpoint", 16, 31, 1)
       .withLocalTemperature()
       .withFanMode(["auto", "low", "medium", "high", "smart"]),
     e
