@@ -31,7 +31,7 @@ jobs:
           FILE_VERSION=$(printf "0x%08X" $(( (MAJOR << 16) | (MINOR << 8) | PATCH )))
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "file_version=${FILE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "ota_name=MZ-Zigbee-C6_${VERSION}.ota" >> "$GITHUB_OUTPUT"
+          echo "ota_name=Mitsubishi2Zigbee_${VERSION}.ota" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v6
         with:

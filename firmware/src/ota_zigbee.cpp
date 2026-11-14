@@ -184,7 +184,7 @@ static esp_err_t ota_zigbee_add_client_cluster(esp_zb_cluster_list_t *list)
 static esp_zb_cluster_list_t *create_ota_cluster_list(void)
 {
     static const char *manuf = "\x0A""Cleboost";
-    static const char *model = "\x0C""MZ-Zigbee-C6";
+    static const char *model = "\x11""Mitsubishi2Zigbee";
 
     esp_zb_cluster_list_t *list = esp_zb_zcl_cluster_list_create();
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 MANUFACTURER_CODE = 0x1337
 IMAGE_TYPE = 0x0001
-MODEL_ID = "MZ-Zigbee-C6"
+MODEL_ID = "Mitsubishi2Zigbee"
 
 
 def semver_to_file_version(version: str) -> int:
