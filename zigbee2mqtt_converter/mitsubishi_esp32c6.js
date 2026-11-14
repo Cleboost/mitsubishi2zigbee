@@ -70,7 +70,7 @@ const definition = {
   zigbeeModel: ["Mitsubishi2Zigbee"],
   model: "Mitsubishi2Zigbee",
   vendor: "Cleboost",
-  description: "Cleboost — passerelle ESP32-C6 Zigbee (Mitsubishi CN105)",
+  description: "Cleboost ESP32-C6 Zigbee gateway for Mitsubishi CN105",
   ota: {
     manufacturerCode: 0x1337,
     imageType: 0x0001,
