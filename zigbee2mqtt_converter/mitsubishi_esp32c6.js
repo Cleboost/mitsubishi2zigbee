@@ -187,6 +187,7 @@ module.exports = {
     model: 'Mitsubishi2Zigbee',
     vendor: 'Cleboost',
     description: 'Cleboost ESP32-C6 Zigbee gateway for Mitsubishi CN105',
+    icon: 'https://raw.githubusercontent.com/Cleboost/mitsubishi2zigbee/main/assets/mitsubishi2zigbee.png',
     ota: {
         manufacturerCode: 0x1337,
         imageType: 0x0001,

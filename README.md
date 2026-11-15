@@ -98,6 +98,10 @@ A video tutorial will cover the full Zigbee2MQTT setup (external converter, `con
 
 In the meantime, the external converter source is already available in [`zigbee2mqtt_converter/mitsubishi_esp32c6.js`](zigbee2mqtt_converter/mitsubishi_esp32c6.js).
 
+### Device icon (Z2M frontend)
+
+Source PNG: [`assets/mitsubishi2zigbee.png`](assets/mitsubishi2zigbee.png). The external converter points Z2M at the hosted file via `icon: https://raw.githubusercontent.com/.../mitsubishi2zigbee.png` (no local copy in `device_icons/` needed once the file is on GitHub `main`).
+
 ## Project layout
 
 ```
@@ -107,6 +111,7 @@ mitsubishi2zigbee/
 │   └── src/
 │       ├── main.cpp           # Zigbee endpoint + status LED
 │       └── cn105.cpp          # Mitsubishi CN105 UART driver
+├── assets/                    # Z2M device icon (mitsubishi2zigbee.png)
 └── zigbee2mqtt_converter/     # Optional Z2M external converter
 
 ```
