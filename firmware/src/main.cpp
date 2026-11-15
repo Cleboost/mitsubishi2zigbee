@@ -18,6 +18,8 @@
 #include "esp_zigbee_attribute.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "bdb/esp_zigbee_bdb_commissioning.h"
+#include "nwk/esp_zigbee_nwk.h"
+#include "zdo/esp_zigbee_zdo_common.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 
 #include "cn105.h"
@@ -51,6 +53,12 @@ static void led_off(void) { led_strip_clear(g_led); }
 
 static volatile bool g_cn105_linked = false;
 
+static bool zb_is_on_network(void)
+{
+    uint16_t addr = esp_zb_get_short_address();
+    return addr != 0xFFFE && addr != 0xFFFF;
+}
+
 static void led_task(void *arg)
 {
     led_strip_config_t strip_cfg = {};
@@ -75,7 +83,11 @@ static void led_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
-        switch (g_led_state) {
+        led_state_t show = g_led_state;
+        if (zb_is_on_network() && show != LED_CONNECTED) {
+            show = LED_CONNECTED;
+        }
+        switch (show) {
         case LED_SEARCHING:
             led_set(0, 0, LED_BRIGHT); vTaskDelay(pdMS_TO_TICKS(150));
             led_off();                 vTaskDelay(pdMS_TO_TICKS(150));
@@ -85,7 +97,13 @@ static void led_task(void *arg)
             led_off();                 vTaskDelay(pdMS_TO_TICKS(800));
             break;
         case LED_CONNECTED:
-            if (g_cn105_linked) {
+            if (!zb_is_on_network()) {
+                /* État CONNECTED fantôme (ex. signal permit join) — bleu lent */
+                led_set(0, 0, LED_BRIGHT);
+                vTaskDelay(pdMS_TO_TICKS(800));
+                led_off();
+                vTaskDelay(pdMS_TO_TICKS(800));
+            } else if (g_cn105_linked) {
                 led_set(0, LED_BRIGHT, 0);
                 vTaskDelay(pdMS_TO_TICKS(900));
                 led_off();
@@ -391,6 +409,37 @@ static void bdb_start_commissioning_cb(uint8_t mode_mask)
         , TAG, "commissioning start failed");
 }
 
+static void mark_zigbee_joined(void)
+{
+    g_led_state = LED_CONNECTED;
+    ESP_LOGI(TAG, "On network: short=0x%04x pan=0x%04x ch=%u",
+             esp_zb_get_short_address(),
+             esp_zb_get_pan_id(),
+             esp_zb_get_current_channel());
+    esp_zb_bdb_finding_binding_start_target(HP_ENDPOINT_ID, 300);
+}
+
+static void update_led_after_steering(esp_err_t err_status,
+                                      esp_zb_bdb_commissioning_status_t bdb_status)
+{
+    if (zb_is_on_network()) {
+        if (err_status != ESP_OK || bdb_status != ESP_ZB_BDB_STATUS_SUCCESS) {
+            ESP_LOGW(TAG, "On network despite steering err=%s bdb=%d",
+                     esp_err_to_name(err_status), (int)bdb_status);
+        }
+        mark_zigbee_joined();
+        return;
+    }
+
+    g_led_state = LED_FOUND;
+    ESP_LOGW(TAG, "Steering failed: esp_err=%s bdb=%d short=0x%04x",
+             esp_err_to_name(err_status),
+             (int)bdb_status,
+             esp_zb_get_short_address());
+    esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_commissioning_cb,
+                           ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+}
+
 extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 {
     uint32_t *p_sg_p     = signal_struct->p_app_signal;
@@ -405,6 +454,9 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
         if (err_status == ESP_OK) {
+            ESP_LOGI(TAG, "start steering (factory_new=%d short=0x%04x)",
+                     esp_zb_bdb_is_factory_new() ? 1 : 0,
+                     esp_zb_get_short_address());
             g_led_state = LED_SEARCHING;
             esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
         } else {
@@ -413,22 +465,33 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         break;
 
     case ESP_ZB_BDB_SIGNAL_STEERING: {
-        uint16_t addr = esp_zb_get_short_address();
-        bool in_network = (addr != 0xFFFE && addr != 0xFFFF);
-        if (in_network) {
-            g_led_state = LED_CONNECTED;
-            esp_zb_bdb_finding_binding_start_target(HP_ENDPOINT_ID, 300);
-        } else {
-            g_led_state = LED_FOUND;
-            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_commissioning_cb,
-                                   ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+        esp_zb_bdb_commissioning_status_t bdb_status =
+            *((esp_zb_bdb_commissioning_status_t *)esp_zb_app_signal_get_params(p_sg_p));
+        update_led_after_steering(err_status, bdb_status);
+        break;
+    }
+
+    case ESP_ZB_ZDO_SIGNAL_DEVICE_ANNCE: {
+        auto *params = (esp_zb_zdo_signal_device_annce_params_t *)esp_zb_app_signal_get_params(p_sg_p);
+        if (params) {
+            ESP_LOGI(TAG, "Device announce short=0x%04x", params->device_short_addr);
+            if (params->device_short_addr == esp_zb_get_short_address()) {
+                mark_zigbee_joined();
+            }
         }
         break;
     }
 
-    case ESP_ZB_NWK_SIGNAL_PERMIT_JOIN_STATUS:
-        g_led_state = LED_CONNECTED;
+    case ESP_ZB_NWK_SIGNAL_PERMIT_JOIN_STATUS: {
+        uint8_t duration = *(uint8_t *)esp_zb_app_signal_get_params(p_sg_p);
+        if (duration) {
+            ESP_LOGI(TAG, "Coordinator permit join open (%us), local short=0x%04x",
+                     duration, esp_zb_get_short_address());
+        } else {
+            ESP_LOGI(TAG, "Coordinator permit join closed");
+        }
         break;
+    }
 
     default:
         break;
