@@ -266,8 +266,6 @@ static void push_state_to_zigbee(const hp_state_t *st)
     uint8_t sys_mode   = zcl_mode_from_hp(st);
     uint8_t fan_mode   = zcl_fan_from_hp(st);
     const bool cmd_pending = cn105_cmd_pending();
-    const hp_state_t *w = cn105_wanted_state();
-    const bool vane_cn105_synced = strcmp(w->vane, st->vane) == 0;
 
     g_syncing_zigbee = true;
     esp_zb_lock_acquire(portMAX_DELAY);
@@ -288,12 +286,13 @@ static void push_state_to_zigbee(const hp_state_t *st)
         esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
             ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID, &fan_mode, false);
-        if (vane_cn105_synced) {
-            g_vane_attr = cn105_vane_index(st->vane);
-            esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
-                MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                VANE_ATTR_ID, &g_vane_attr, false);
-        }
+    }
+    /* Toujours refléter la vane CN105 (même si wanted AUTO ≠ position murale) */
+    if (!cmd_pending) {
+        g_vane_attr = cn105_vane_index(st->vane);
+        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+            MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+            VANE_ATTR_ID, &g_vane_attr, false);
     }
     static uint8_t last_sys_mode_logged = 0xff;
     if (sys_mode != last_sys_mode_logged) {

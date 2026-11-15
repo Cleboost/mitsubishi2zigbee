@@ -89,8 +89,8 @@ const fzVane = {
     cluster: MITSU_EXT_CLUSTER,
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg) => {
-        if (msg.data.vanePosition === undefined) return;
-        const idx = msg.data.vanePosition;
+        const idx = mitsuAttrU8(msg, 'vanePosition', 0x0000);
+        if (idx === undefined) return;
         return {vane_position: VANE_OPTIONS[idx] ?? 'auto'};
     },
 };
@@ -157,13 +157,16 @@ const tzDebug = {
     },
 };
 
-async function readFullThermostatState(ep) {
+async function readFullDeviceState(ep) {
     await ep.read('hvacThermostat', [
         'localTemp',
         'occupiedHeatingSetpoint',
         'systemMode',
     ]);
     await ep.read('hvacFanCtrl', ['fanMode']);
+    try {
+        await ep.read(MITSU_EXT_CLUSTER, ['vanePosition', 'mitsuDebugLed']);
+    } catch {}
 }
 
 module.exports = {
@@ -227,8 +230,8 @@ module.exports = {
         const ep = device.getEndpoint(1);
         if (!ep) return;
         try {
-            await readFullThermostatState(ep);
-            logger.info('Mitsubishi2Zigbee: full thermostat read after ' + type);
+            await readFullDeviceState(ep);
+            logger.info('Mitsubishi2Zigbee: full state read after ' + type);
         } catch (err) {
             logger.warning(`Mitsubishi2Zigbee: read after ${type} failed: ${err}`);
         }
@@ -254,13 +257,18 @@ module.exports = {
                     reportableChange: 1,
                 },
             ]);
+            await ep.configureReporting(MITSU_EXT_CLUSTER, [
+                {
+                    attribute: 'vanePosition',
+                    minimumReportInterval: 10,
+                    maximumReportInterval: 600,
+                    reportableChange: 1,
+                },
+            ]);
         } catch (e) {
             logger?.warning?.(`reporting: ${e}`);
         }
-        await readFullThermostatState(ep);
-        try {
-            await ep.read(MITSU_EXT_CLUSTER, ['vanePosition', 'mitsuDebugLed']);
-        } catch {}
+        await readFullDeviceState(ep);
         await ep.read('genBasic', ['swBuildId']);
         const otaEp = device.getEndpoint(2);
         if (otaEp) {
