@@ -15,6 +15,10 @@ build:
 upload:
     cd firmware && pio run --target upload
 
+# Efface toute la flash (firmware + NVS) — oublie le réseau Zigbee enregistré
+erase:
+    cd firmware && pio run --target erase
+
 # Ouvre le moniteur série à 115200 bauds avec décodage des crashs ESP32
 monitor:
     cd firmware && pio device monitor
