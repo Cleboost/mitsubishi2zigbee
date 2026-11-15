@@ -8,6 +8,7 @@ const ea = exposes.access;
 const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
 
 const OPERATING_ATTR = '0x0401';
+const DEBUG_LED_ATTR = '0x0402';
 
 /** ZCL systemMode → string (thermostat cluster). */
 const SYSTEM_MODE_FROM_ZCL = {
@@ -107,6 +108,29 @@ const fzVane = {
   },
 };
 
+const fzDebug = {
+  cluster: "hvacThermostat",
+  type: ["attributeReport", "readResponse"],
+  convert: (model, msg) => {
+    if (msg.data[DEBUG_LED_ATTR] === undefined) return;
+    return {debug: msg.data[DEBUG_LED_ATTR] === 1};
+  },
+};
+
+const tzDebug = {
+  key: ["debug"],
+  convertSet: async (entity, key, value, meta) => {
+    const on = value === true || value === "ON" || value === 1;
+    await entity.write("hvacThermostat", {
+      [DEBUG_LED_ATTR]: {value: on ? 1 : 0, type: 0x20},
+    });
+    return {state: {debug: on}};
+  },
+  convertGet: async (entity, key, meta) => {
+    await entity.read("hvacThermostat", [DEBUG_LED_ATTR]);
+  },
+};
+
 const tzVane = {
   key: ["vane_position"],
   convertSet: async (entity, key, value, meta) => {
@@ -132,13 +156,14 @@ const definition = {
     imageType: 0x0001,
   },
   endpoint: (device) => ({default: 1, ota: 2}),
-  fromZigbee: [fzFirmware, fzRunningState, fz.thermostat, fz.fan, fzVane],
+  fromZigbee: [fzFirmware, fzRunningState, fz.thermostat, fz.fan, fzVane, fzDebug],
   toZigbee: [
     tz.thermostat_system_mode,
     tz.thermostat_occupied_heating_setpoint,
     tz.thermostat_occupied_cooling_setpoint,
     tz.fan_mode,
     tzVane,
+    tzDebug,
   ],
   exposes: [
     e
@@ -151,6 +176,11 @@ const definition = {
     e
       .enum("vane_position", ea.ALL, VANE_OPTIONS)
       .withDescription("Inclinaison des pales (AUTO, 1-5, SWING)"),
+    e
+      .binary("debug", ea.ALL, true, false)
+      .withDescription(
+        "Status LED: false (default) = off; true = normal blue/green pairing patterns",
+      ),
   ],
   configure: async (device, coordinatorEndpoint) => {
     const ep = device.getEndpoint(1);
@@ -167,6 +197,7 @@ const definition = {
       "occupiedHeatingSetpoint",
       "systemMode",
       OPERATING_ATTR,
+      DEBUG_LED_ATTR,
     ]);
     try {
       await ep.configureReporting("hvacThermostat", [

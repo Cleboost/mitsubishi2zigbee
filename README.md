@@ -26,7 +26,7 @@ Inspired by [gysmo38/mitsubishi2MQTT](https://github.com/gysmo38/mitsubishi2MQTT
 | **Fan speed** | Auto, Quiet (Smart), Low, Medium, High |
 | **Vane** | Auto, positions 1–5, Swing |
 | **Telemetry** | Room temperature, compressor run state → HA `running_state` (heat + idle when setpoint reached, same as mitsubishi2MQTT) |
-| **Status LED** (WS2812) | Fast blue — scanning · Slow blue — network found, not paired · Green pulse — paired |
+| **Status LED** (WS2812) | Off by default; set Zigbee `debug` to `true` for blue/green pairing patterns |
 
 ## Hardware
 
@@ -53,7 +53,24 @@ The CN105 port provides 12 V, 5 V, and 5 V logic UART lines.
 
 ### Prerequisites
 
-- [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
+- [PlatformIO](https://platformio.org/) (VS Code extension or CLI), or `nix develop` from this repo
+
+### NixOS (USB upload / serial)
+
+`nix develop` does not install udev rules by itself. Add once in your NixOS config:
+
+```nix
+services.udev.packages = with pkgs; [ platformio-core.udev ];
+users.users.<your-user>.extraGroups = [ "dialout" ];
+```
+
+Or import this flake’s module:
+
+```nix
+imports = [ inputs.mitsubishi2zigbee.nixosModules.platformio-udev ];
+```
+
+Then `sudo nixos-rebuild switch` and replug the USB device.
 
 ### Commands
 

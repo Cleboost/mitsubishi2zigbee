@@ -3,8 +3,15 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = {nixpkgs, ...}: {
-    devShells = nixpkgs.lib.genAttrs [
+  outputs = {nixpkgs, ...}: let
+    inherit (nixpkgs) lib;
+  in {
+    # NixOS: imports = [ inputs.mitsubishi2zigbee.nixosModules.platformio-udev ];
+    nixosModules.platformio-udev = {pkgs, ...}: {
+      services.udev.packages = [pkgs.platformio-core.udev];
+    };
+
+    devShells = lib.genAttrs [
       "x86_64-linux"
       "aarch64-linux"
       "x86_64-darwin"
@@ -43,6 +50,14 @@
           echo "   - node / npm       : Zigbee2MQTT converter"
           echo "   - python3          : Scripts de release OTA"
           echo "=========================================================="
+          if [ "$(uname -s)" = Linux ]; then
+            if [ ! -e /etc/udev/rules.d/99-platformio-udev.rules ]; then
+              echo ""
+              echo " NixOS: services.udev.packages = [ platformio-core.udev ]; then nixos-rebuild switch"
+              echo ""
+            fi
+            export PLATFORMIO_SETTING_DISABLE_UDEV_RULES_CHECK=true
+          fi
         '';
       };
     });

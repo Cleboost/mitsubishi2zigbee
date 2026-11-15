@@ -11,6 +11,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "led_strip.h"
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
@@ -31,6 +32,7 @@ typedef enum {
 } led_state_t;
 
 static volatile led_state_t g_led_state = LED_SEARCHING;
+static uint8_t              g_debug_led_attr = 0;
 static led_strip_handle_t   g_led;
 
 static void led_set(uint8_t r, uint8_t g, uint8_t b)
@@ -52,11 +54,18 @@ static void led_task(void *arg)
     rmt_cfg.resolution_hz = 10 * 1000 * 1000;
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &g_led));
 
-    led_set(LED_BRIGHT, LED_BRIGHT, LED_BRIGHT);
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    led_off();
+    if (g_debug_led_attr != 0) {
+        led_set(LED_BRIGHT, LED_BRIGHT, LED_BRIGHT);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        led_off();
+    }
 
     while (true) {
+        if (g_debug_led_attr == 0) {
+            led_off();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
         switch (g_led_state) {
         case LED_SEARCHING:
             led_set(0, 0, LED_BRIGHT); vTaskDelay(pdMS_TO_TICKS(150));
@@ -87,10 +96,44 @@ static void led_task(void *arg)
 #define VANE_ATTR_ID       0x0400
 /** CN105 compressor active (INFO 0x06 data[4]); 0=idle, 1=running — mirrors HeatPump::operating */
 #define OPERATING_ATTR_ID  0x0401
+/** 0 = LED off (default); 1 = normal pairing/status LED patterns */
+#define DEBUG_LED_ATTR_ID  0x0402
+
+#define NVS_NS             "mitsu_zb"
+#define NVS_KEY_DEBUG_LED  "debug_led"
 
 static hp_state_t g_hp = {};
 static uint8_t    g_vane_attr = 0;
 static uint8_t    g_operating_attr = 0;
+
+static void debug_led_load_nvs(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS, NVS_READONLY, &nvs) != ESP_OK) return;
+    uint8_t v = 0;
+    if (nvs_get_u8(nvs, NVS_KEY_DEBUG_LED, &v) == ESP_OK) {
+        g_debug_led_attr = v ? 1 : 0;
+    }
+    nvs_close(nvs);
+}
+
+static void debug_led_store_nvs(uint8_t v)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &nvs) != ESP_OK) return;
+    nvs_set_u8(nvs, NVS_KEY_DEBUG_LED, v);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+static void apply_debug_led(uint8_t v)
+{
+    g_debug_led_attr = v ? 1 : 0;
+    debug_led_store_nvs(g_debug_led_attr);
+    ESP_LOGI(TAG, "debug=%u → status LED %s",
+             g_debug_led_attr,
+             g_debug_led_attr ? "normal" : "off");
+}
 
 static void apply_system_mode(uint8_t sys_mode)
 {
@@ -227,6 +270,11 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             cn105_set_temp(centi / 100.0f);
         } else if (attr == VANE_ATTR_ID) {
             apply_vane(*(uint8_t *)val);
+        } else if (attr == DEBUG_LED_ATTR_ID) {
+            apply_debug_led(*(uint8_t *)val);
+            esp_zb_zcl_set_attribute_val(ENDPOINT_ID,
+                ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                DEBUG_LED_ATTR_ID, &g_debug_led_attr, false);
         }
     } else if (cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL) {
         if (attr == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
@@ -333,6 +381,7 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max);
     esp_zb_thermostat_cluster_add_attr(th, VANE_ATTR_ID, &g_vane_attr);
     esp_zb_thermostat_cluster_add_attr(th, OPERATING_ATTR_ID, &g_operating_attr);
+    esp_zb_thermostat_cluster_add_attr(th, DEBUG_LED_ATTR_ID, &g_debug_led_attr);
     esp_zb_cluster_list_add_thermostat_cluster(list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {
@@ -424,6 +473,7 @@ extern "C" void app_main(void)
     config.host_config.host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE;
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
+    debug_led_load_nvs();
     ESP_LOGI(TAG, "=== mitsubishi2zigbee — CN105 ↔ Zigbee gateway ===");
     ESP_LOGI(TAG, "firmware OTA version 0x%08lx (manuf 0x%04x type 0x%04x)",
              (unsigned long)OTA_FILE_VERSION, OTA_MANUFACTURER_CODE, OTA_IMAGE_TYPE);
