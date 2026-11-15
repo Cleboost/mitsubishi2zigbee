@@ -26,7 +26,7 @@ Inspired by [gysmo38/mitsubishi2MQTT](https://github.com/gysmo38/mitsubishi2MQTT
 | **Fan speed** | Auto, Quiet (Smart), Low, Medium, High |
 | **Vane** | Auto, positions 1–5, Swing |
 | **Telemetry** | Room temperature, compressor run state → HA `running_state` |
-| **Status LED** (WS2812) | Off by default; set Zigbee `debug` to `true` for fast/slow blue and green pairing patterns |
+| **Status LED** (WS2812) | On by default (fast/slow blue, green when paired); set Zigbee `debug` to `false` to keep the LED off |
 
 ## Hardware
 
@@ -84,7 +84,7 @@ pio device monitor         # serial logs (115200 baud)
 
 1. Flash the firmware and power the board from the CN105 port.
 2. Put your Zigbee coordinator into pairing mode.
-3. When `debug` is enabled, watch the status LED:
+3. Watch the status LED (or disable via `debug` = `false`):
    - Fast blue — searching for a network
    - Slow blue — network found, waiting to join
    - Green pulse — joined successfully

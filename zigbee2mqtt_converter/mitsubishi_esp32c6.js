@@ -210,7 +210,7 @@ module.exports = {
         e
             .binary('debug', ea.ALL, true, false)
             .withDescription(
-                'Status LED: false (default) = off; true = normal blue/green pairing patterns',
+                'Status LED: true (default) = normal blue/green pairing patterns; false = off',
             ),
     ],
     configure: async (device, coordinatorEndpoint) => {

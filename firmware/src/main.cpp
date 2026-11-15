@@ -38,7 +38,7 @@ typedef enum {
 } led_state_t;
 
 static volatile led_state_t g_led_state = LED_SEARCHING;
-static uint8_t              g_debug_led_attr = 0;
+static uint8_t              g_debug_led_attr = 1;
 static uint8_t              g_operating_attr = 0;
 static led_strip_handle_t   g_led;
 

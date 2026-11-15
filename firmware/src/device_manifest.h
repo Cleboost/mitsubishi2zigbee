@@ -8,7 +8,7 @@
 
 /** CN105 compressor active (INFO 0x06 data[4]); 0=idle, 1=running */
 #define OPERATING_ATTR_ID    0x0401
-/** 0 = status LED off (default); 1 = normal blue/green patterns */
+/** 0 = status LED off; 1 = normal blue/green patterns (default) */
 #define DEBUG_LED_ATTR_ID    0x0402
 
 #define HP_SETPOINT_DEFAULT  2100
