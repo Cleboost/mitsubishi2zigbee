@@ -11,6 +11,10 @@
 #define HP_SETPOINT_DEFAULT  2100
 #define HP_SETPOINT_MIN      1600
 #define HP_SETPOINT_MAX      3100
+/** Min heat/cool gap for ZCL Thermostat (0.1 °C steps); CN105 still single setpoint */
+#define HP_SETPOINT_DEAD_BAND_TENTHS 10
+/** Cooling occupied setpoint kept high so heating writes pass ZCL dead-band checks */
+#define HP_ZCL_COOL_SETPOINT_DUMMY   3200
 
 #define NVS_NS               "mitsu_zb"
 #define NVS_KEY_DEBUG_LED    "debug_led"

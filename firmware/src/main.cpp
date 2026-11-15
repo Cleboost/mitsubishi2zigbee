@@ -41,6 +41,7 @@ typedef enum {
 
 static volatile led_state_t g_led_state = LED_SEARCHING;
 static uint8_t              g_debug_led_attr = 1;
+static int8_t               g_setpoint_dead_band = (int8_t)HP_SETPOINT_DEAD_BAND_TENTHS;
 static led_strip_handle_t   g_led;
 
 static void led_set(uint8_t r, uint8_t g, uint8_t b)
@@ -270,29 +271,35 @@ static void push_state_to_zigbee(const hp_state_t *st)
 
     g_syncing_zigbee = true;
     esp_zb_lock_acquire(portMAX_DELAY);
+    int16_t cool_sp = (int16_t)HP_ZCL_COOL_SETPOINT_DUMMY;
     esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
         ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, &local_temp, false);
+    esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+        ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID, &cool_sp, false);
+    esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
+        ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, &sys_mode, false);
     if (!cmd_pending) {
         esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
             ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID, &setpoint, false);
         esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
-            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID, &setpoint, false);
-        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
-            ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, &sys_mode, false);
-        esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
             ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
             ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID, &fan_mode, false);
-        /* Ne pas écraser vane ZCL tant que CN105 n'a pas appliqué (sinon write HA perdu) */
         if (vane_cn105_synced) {
             g_vane_attr = cn105_vane_index(st->vane);
             esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
                 MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                 VANE_ATTR_ID, &g_vane_attr, false);
         }
+    }
+    static uint8_t last_sys_mode_logged = 0xff;
+    if (sys_mode != last_sys_mode_logged) {
+        ESP_LOGI(TAG, "ZCL sync mode=0x%02x power=%d hp_mode=%s sp=%.1f",
+                 sys_mode, (int)st->power_on, st->mode, (double)st->target_temp);
+        last_sys_mode_logged = sys_mode;
     }
     esp_zb_lock_release();
     g_syncing_zigbee = false;
@@ -397,9 +404,10 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     if (cluster == ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT) {
         if (attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID) {
             hp_queue_cmd(HP_CMD_SYSTEM_MODE, *(uint8_t *)val, 0);
-        } else if (attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID ||
-                   attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID) {
+        } else if (attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID) {
             hp_queue_cmd(HP_CMD_SETPOINT, 0, *(int16_t *)val);
+        } else if (attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID) {
+            ESP_LOGD(TAG, "ignore cooling setpoint ZCL dummy write");
         }
     } else if (cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL) {
         if (attr == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
@@ -531,22 +539,26 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
 
     esp_zb_thermostat_cluster_cfg_t th_cfg = {
         .local_temperature             = HP_SETPOINT_DEFAULT,
-        .occupied_cooling_setpoint     = HP_SETPOINT_DEFAULT,
+        .occupied_cooling_setpoint     = HP_ZCL_COOL_SETPOINT_DUMMY,
         .occupied_heating_setpoint     = HP_SETPOINT_DEFAULT,
         .control_sequence_of_operation =
             ESP_ZB_ZCL_THERMOSTAT_CONTROL_SEQ_OF_OPERATION_COOLING_AND_HEATING_4_PIPES,
         .system_mode                   = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF,
     };
     esp_zb_attribute_list_t *th = esp_zb_thermostat_cluster_create(&th_cfg);
-    int16_t lim_min = HP_SETPOINT_MIN, lim_max = HP_SETPOINT_MAX;
+    int16_t lim_min = HP_SETPOINT_MIN;
+    int16_t lim_max_heat = HP_SETPOINT_MAX;
+    int16_t lim_max_cool = HP_ZCL_COOL_SETPOINT_DUMMY;
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, &lim_min);
     esp_zb_thermostat_cluster_add_attr(th,
-        ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_HEAT_SETPOINT_LIMIT_ID, &lim_max);
+        ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_HEAT_SETPOINT_LIMIT_ID, &lim_max_heat);
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_COOL_SETPOINT_LIMIT_ID, &lim_min);
     esp_zb_thermostat_cluster_add_attr(th,
-        ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max);
+        ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max_cool);
+    esp_zb_thermostat_cluster_add_attr(th,
+        ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_SETPOINT_DEAD_BAND_ID, &g_setpoint_dead_band);
     esp_zb_cluster_list_add_thermostat_cluster(list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_attribute_list_t *mitsu_ext = esp_zb_zcl_attr_list_create(MITSU_EXT_CLUSTER_ID);

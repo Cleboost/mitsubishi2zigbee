@@ -9,6 +9,22 @@ const ea = exposes.access;
 const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
 const MITSU_EXT_CLUSTER = 'manuSpecificMitsubishiHvac';
 const HVAC_CLUSTERS = ['hvacThermostat', 'hvacFanCtrl', MITSU_EXT_CLUSTER];
+/** ZCL cooling occupied setpoint on device (dummy high; satisfies dead-band vs heating) */
+const ZCL_COOL_SETPOINT_DUMMY = 3200;
+
+const SYSTEM_MODE_FROM_ZCL = {
+    0: 'off',
+    1: 'auto',
+    3: 'cool',
+    4: 'heat',
+    7: 'fan_only',
+    8: 'dry',
+};
+
+function zclSystemModeToString(mode) {
+    if (typeof mode === 'number') return SYSTEM_MODE_FROM_ZCL[mode];
+    return mode;
+}
 
 /** Herdsman may use name, hex string, or numeric attr id in msg.data. */
 function mitsuAttrU8(msg, name, attrId) {
@@ -35,6 +51,21 @@ function setpointState(value) {
         current_heating_setpoint: value,
     };
 }
+
+const fzThermostat = {
+    cluster: 'hvacThermostat',
+    type: ['attributeReport', 'readResponse'],
+    convert: (model, msg, publish, options, meta) => {
+        const result = {};
+        if (msg.data.localTemp !== undefined) {
+            result.local_temperature = roundDeg(Number(msg.data.localTemp) / 100);
+        }
+        if (msg.data.systemMode !== undefined) {
+            result.system_mode = zclSystemModeToString(msg.data.systemMode);
+        }
+        return Object.keys(result).length ? result : undefined;
+    },
+};
 
 const fzFirmware = {
     cluster: 'genBasic',
@@ -88,7 +119,11 @@ const tzSetpoint = {
     key: ['occupied_heating_setpoint'],
     convertSet: async (entity, key, value, meta) => {
         const rounded = roundDeg(value);
-        await entity.write('hvacThermostat', {occupiedHeatingSetpoint: rounded * 100});
+        const heatSp = rounded * 100;
+        await entity.write('hvacThermostat', {
+            occupiedHeatingSetpoint: heatSp,
+            occupiedCoolingSetpoint: ZCL_COOL_SETPOINT_DUMMY,
+        });
         return {state: setpointState(rounded)};
     },
     convertGet: async (entity, key, meta) => {
@@ -122,6 +157,15 @@ const tzDebug = {
     },
 };
 
+async function readFullThermostatState(ep) {
+    await ep.read('hvacThermostat', [
+        'localTemp',
+        'occupiedHeatingSetpoint',
+        'systemMode',
+    ]);
+    await ep.read('hvacFanCtrl', ['fanMode']);
+}
+
 module.exports = {
     zigbeeModel: ['Mitsubishi2Zigbee', 'MZ-Zigbee-C6'],
     model: 'Mitsubishi2Zigbee',
@@ -146,7 +190,7 @@ module.exports = {
     ],
     fromZigbee: [
         fzFirmware,
-        fz.thermostat,
+        fzThermostat,
         fzSetpoint,
         fz.fan,
         fzVane,
@@ -175,24 +219,49 @@ module.exports = {
                 'Status LED: true (default) = normal blue/green pairing patterns; false = off',
             ),
     ],
-    configure: async (device, coordinatorEndpoint) => {
+    meta: {
+        disableDefaultResponse: false,
+    },
+    onEvent: async (type, data, device, options, state, logger) => {
+        if (type !== 'deviceAnnounce' && type !== 'start') return;
+        const ep = device.getEndpoint(1);
+        if (!ep) return;
+        try {
+            await readFullThermostatState(ep);
+            logger.info('Mitsubishi2Zigbee: full thermostat read after ' + type);
+        } catch (err) {
+            logger.warning(`Mitsubishi2Zigbee: read after ${type} failed: ${err}`);
+        }
+    },
+    configure: async (device, coordinatorEndpoint, logger) => {
         const ep = device.getEndpoint(1);
         for (const cluster of HVAC_CLUSTERS) {
             try {
                 await ep.bind(cluster, coordinatorEndpoint);
-            } catch {}
+            } catch (e) {
+                logger?.debug?.(`bind ${cluster}: ${e}`);
+            }
         }
         try {
             await reporting.thermostatTemperature(ep);
             await reporting.thermostatOccupiedHeatingSetpoint(ep);
             await reporting.fanMode(ep);
-        } catch {}
-        await ep.read('genBasic', ['swBuildId']);
-        await ep.read('hvacThermostat', ['localTemp', 'occupiedHeatingSetpoint', 'systemMode']);
+            await ep.configureReporting('hvacThermostat', [
+                {
+                    attribute: 'systemMode',
+                    minimumReportInterval: 10,
+                    maximumReportInterval: 300,
+                    reportableChange: 1,
+                },
+            ]);
+        } catch (e) {
+            logger?.warning?.(`reporting: ${e}`);
+        }
+        await readFullThermostatState(ep);
         try {
             await ep.read(MITSU_EXT_CLUSTER, ['vanePosition', 'mitsuDebugLed']);
         } catch {}
-        await ep.read('hvacFanCtrl', ['fanMode']);
+        await ep.read('genBasic', ['swBuildId']);
         const otaEp = device.getEndpoint(2);
         if (otaEp) {
             try {
