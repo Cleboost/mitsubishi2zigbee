@@ -146,10 +146,21 @@ static void debug_led_store_nvs(uint8_t v)
     nvs_close(nvs);
 }
 
-static void apply_debug_led(uint8_t v)
+static void deferred_debug_persist_cb(uint8_t v)
+{
+    debug_led_store_nvs(v ? 1 : 0);
+    ESP_LOGI(TAG, "debug=%u persisted", v ? 1 : 0);
+}
+
+static void apply_debug_led(uint8_t v, bool persist_async)
 {
     g_debug_led_attr = v ? 1 : 0;
-    debug_led_store_nvs(g_debug_led_attr);
+    if (persist_async) {
+        esp_zb_scheduler_alarm((esp_zb_callback_t)deferred_debug_persist_cb,
+                               g_debug_led_attr, 10);
+    } else {
+        debug_led_store_nvs(g_debug_led_attr);
+    }
     ESP_LOGI(TAG, "debug=%u → status LED %s",
              g_debug_led_attr,
              g_debug_led_attr ? "normal" : "off");
@@ -286,7 +297,7 @@ static void push_state_to_zigbee(const hp_state_t *st)
     }
     g_operating_attr = st->operating ? 1 : 0;
     esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
-        ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         OPERATING_ATTR_ID, &g_operating_attr, false);
     esp_zb_lock_release();
     g_syncing_zigbee = false;
@@ -321,6 +332,9 @@ static signed int mitsu_ext_check_value(uint16_t attr_id, uint8_t endpoint, uint
     if (attr_id == VANE_ATTR_ID && value && *value >= CN105_VANE_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (attr_id == DEBUG_LED_ATTR_ID && value && *value > 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
     return ESP_OK;
 }
 
@@ -332,6 +346,9 @@ static void mitsu_ext_write_attr(uint8_t endpoint, uint16_t attr_id, uint8_t *ne
     if (attr_id == VANE_ATTR_ID && *new_value < CN105_VANE_COUNT) {
         g_vane_attr = *new_value;
         hp_queue_cmd(HP_CMD_VANE, *new_value, 0);
+    } else if (attr_id == DEBUG_LED_ATTR_ID) {
+        /* Callback ZCL : LED tout de suite, NVS en différé (évite timeout Z2M) */
+        apply_debug_led(*new_value, true);
     }
 }
 
@@ -388,11 +405,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         } else if (attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID ||
                    attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID) {
             hp_queue_cmd(HP_CMD_SETPOINT, 0, *(int16_t *)val);
-        } else if (attr == DEBUG_LED_ATTR_ID) {
-            apply_debug_led(*(uint8_t *)val);
-            esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
-                ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                DEBUG_LED_ATTR_ID, &g_debug_led_attr, false);
         }
     } else if (cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL) {
         if (attr == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
@@ -465,8 +477,11 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         break;
 
     case ESP_ZB_BDB_SIGNAL_STEERING: {
-        esp_zb_bdb_commissioning_status_t bdb_status =
-            *((esp_zb_bdb_commissioning_status_t *)esp_zb_app_signal_get_params(p_sg_p));
+        esp_zb_bdb_commissioning_status_t bdb_status = ESP_ZB_BDB_STATUS_NO_NETWORK;
+        void *params = esp_zb_app_signal_get_params(p_sg_p);
+        if (params) {
+            bdb_status = *(esp_zb_bdb_commissioning_status_t *)params;
+        }
         update_led_after_steering(err_status, bdb_status);
         break;
     }
@@ -537,13 +552,17 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_COOL_SETPOINT_LIMIT_ID, &lim_min);
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max);
-    esp_zb_thermostat_cluster_add_attr(th, OPERATING_ATTR_ID, &g_operating_attr);
-    esp_zb_thermostat_cluster_add_attr(th, DEBUG_LED_ATTR_ID, &g_debug_led_attr);
     esp_zb_cluster_list_add_thermostat_cluster(list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_attribute_list_t *mitsu_ext = esp_zb_zcl_attr_list_create(MITSU_EXT_CLUSTER_ID);
     ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, VANE_ATTR_ID,
         ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &g_vane_attr));
+    ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, OPERATING_ATTR_ID,
+        ESP_ZB_ZCL_ATTR_TYPE_U8,
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+        &g_operating_attr));
+    ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, DEBUG_LED_ATTR_ID,
+        ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &g_debug_led_attr));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_custom_cluster(list, mitsu_ext, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {

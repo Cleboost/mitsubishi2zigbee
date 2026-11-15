@@ -5,11 +5,10 @@
 #define HP_ENDPOINT_ID       1
 #define MITSU_EXT_CLUSTER_ID 0xFF00
 #define VANE_ATTR_ID         0x0000
-
 /** CN105 compressor active (INFO 0x06 data[4]); 0=idle, 1=running */
-#define OPERATING_ATTR_ID    0x0401
+#define OPERATING_ATTR_ID    0x0001
 /** 0 = status LED off; 1 = normal blue/green patterns (default) */
-#define DEBUG_LED_ATTR_ID    0x0402
+#define DEBUG_LED_ATTR_ID    0x0002
 
 #define HP_SETPOINT_DEFAULT  2100
 #define HP_SETPOINT_MIN      1600

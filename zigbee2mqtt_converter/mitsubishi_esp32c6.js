@@ -10,9 +10,6 @@ const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
 const MITSU_EXT_CLUSTER = 'manuSpecificMitsubishiHvac';
 const HVAC_CLUSTERS = ['hvacThermostat', 'hvacFanCtrl', MITSU_EXT_CLUSTER];
 
-const OPERATING_ATTR = '0x0401';
-const DEBUG_LED_ATTR = '0x0402';
-
 const SYSTEM_MODE_FROM_ZCL = {
     0: 'off',
     1: 'auto',
@@ -37,13 +34,20 @@ function runningStateFromMode(systemMode, operating) {
     return 'idle';
 }
 
+/** Herdsman may use name, hex string, or numeric attr id in msg.data. */
+function mitsuAttrU8(msg, name, attrId) {
+    const id = attrId;
+    return msg.data[name] ?? msg.data[id] ?? msg.data[`0x${id.toString(16).padStart(4, '0')}`];
+}
+
 function updateRunningStateMeta(meta, msg) {
     if (!meta.mitsuHp) meta.mitsuHp = {};
     if (msg.data.systemMode !== undefined) {
         meta.mitsuHp.systemMode = msg.data.systemMode;
     }
-    if (msg.data[OPERATING_ATTR] !== undefined) {
-        meta.mitsuHp.operating = msg.data[OPERATING_ATTR] === 1;
+    const op = mitsuAttrU8(msg, 'mitsuOperating', 0x0001);
+    if (op !== undefined) {
+        meta.mitsuHp.operating = op === 1;
     }
 }
 
@@ -57,6 +61,16 @@ const fzRunningState = {
     cluster: 'hvacThermostat',
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg, publish, options, meta) => {
+        updateRunningStateMeta(meta, msg);
+        return publishRunningState(meta);
+    },
+};
+
+const fzOperating = {
+    cluster: MITSU_EXT_CLUSTER,
+    type: ['attributeReport', 'readResponse'],
+    convert: (model, msg, publish, options, meta) => {
+        if (mitsuAttrU8(msg, 'mitsuOperating', 0x0001) === undefined) return;
         updateRunningStateMeta(meta, msg);
         return publishRunningState(meta);
     },
@@ -121,11 +135,12 @@ const fzSetpoint = {
 };
 
 const fzDebug = {
-    cluster: 'hvacThermostat',
+    cluster: MITSU_EXT_CLUSTER,
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg) => {
-        if (msg.data[DEBUG_LED_ATTR] === undefined) return;
-        return {debug: msg.data[DEBUG_LED_ATTR] === 1};
+        const v = mitsuAttrU8(msg, 'mitsuDebugLed', 0x0002);
+        if (v === undefined) return;
+        return {debug: v === 1};
     },
 };
 
@@ -158,13 +173,12 @@ const tzDebug = {
     key: ['debug'],
     convertSet: async (entity, key, value, meta) => {
         const on = value === true || value === 'ON' || value === 1;
-        await entity.write('hvacThermostat', {
-            [DEBUG_LED_ATTR]: {value: on ? 1 : 0, type: 0x20},
-        });
+        await entity.write(MITSU_EXT_CLUSTER, {mitsuDebugLed: on ? 1 : 0});
+        meta.state.debug = on;
         return {state: {debug: on}};
     },
     convertGet: async (entity, key, meta) => {
-        await entity.read('hvacThermostat', [DEBUG_LED_ATTR]);
+        await entity.read(MITSU_EXT_CLUSTER, ['mitsuDebugLed']);
     },
 };
 
@@ -183,12 +197,23 @@ module.exports = {
             ID: 0xff00,
             attributes: {
                 vanePosition: {ID: 0x0000, type: 0x20, write: true},
+                mitsuOperating: {ID: 0x0001, type: 0x20},
+                mitsuDebugLed: {ID: 0x0002, type: 0x20, write: true},
             },
             commands: {},
             commandsResponse: {},
         }),
     ],
-    fromZigbee: [fzFirmware, fzRunningState, fz.thermostat, fzSetpoint, fz.fan, fzVane, fzDebug],
+    fromZigbee: [
+        fzFirmware,
+        fzRunningState,
+        fzOperating,
+        fz.thermostat,
+        fzSetpoint,
+        fz.fan,
+        fzVane,
+        fzDebug,
+    ],
     toZigbee: [
         tz.thermostat_system_mode,
         tzSetpoint,
@@ -226,17 +251,14 @@ module.exports = {
             await reporting.fanMode(ep);
         } catch {}
         await ep.read('genBasic', ['swBuildId']);
-        await ep.read('hvacThermostat', [
-            'localTemp',
-            'occupiedHeatingSetpoint',
-            'systemMode',
-            OPERATING_ATTR,
-            DEBUG_LED_ATTR,
-        ]);
+        await ep.read('hvacThermostat', ['localTemp', 'occupiedHeatingSetpoint', 'systemMode']);
         try {
-            await ep.configureReporting('hvacThermostat', [
+            await ep.read(MITSU_EXT_CLUSTER, ['vanePosition', 'mitsuOperating', 'mitsuDebugLed']);
+        } catch {}
+        try {
+            await ep.configureReporting(MITSU_EXT_CLUSTER, [
                 {
-                    attribute: {ID: 0x0401, type: 0x20},
+                    attribute: 'mitsuOperating',
                     minimumReportInterval: 5,
                     maximumReportInterval: 60,
                     reportableChange: 1,
@@ -244,9 +266,6 @@ module.exports = {
             ]);
         } catch {}
         await ep.read('hvacFanCtrl', ['fanMode']);
-        try {
-            await ep.read(MITSU_EXT_CLUSTER, ['vanePosition']);
-        } catch {}
         const otaEp = device.getEndpoint(2);
         if (otaEp) {
             try {
