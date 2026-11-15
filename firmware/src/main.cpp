@@ -41,7 +41,6 @@ typedef enum {
 
 static volatile led_state_t g_led_state = LED_SEARCHING;
 static uint8_t              g_debug_led_attr = 1;
-static uint8_t              g_operating_attr = 0;
 static led_strip_handle_t   g_led;
 
 static void led_set(uint8_t r, uint8_t g, uint8_t b)
@@ -295,10 +294,6 @@ static void push_state_to_zigbee(const hp_state_t *st)
                 VANE_ATTR_ID, &g_vane_attr, false);
         }
     }
-    g_operating_attr = st->operating ? 1 : 0;
-    esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
-        MITSU_EXT_CLUSTER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        OPERATING_ATTR_ID, &g_operating_attr, false);
     esp_zb_lock_release();
     g_syncing_zigbee = false;
 }
@@ -557,10 +552,6 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
     esp_zb_attribute_list_t *mitsu_ext = esp_zb_zcl_attr_list_create(MITSU_EXT_CLUSTER_ID);
     ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, VANE_ATTR_ID,
         ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &g_vane_attr));
-    ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, OPERATING_ATTR_ID,
-        ESP_ZB_ZCL_ATTR_TYPE_U8,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-        &g_operating_attr));
     ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, DEBUG_LED_ATTR_ID,
         ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &g_debug_led_attr));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_custom_cluster(list, mitsu_ext, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
@@ -602,10 +593,9 @@ static void hp_sync_task(void *arg)
             }
         } else {
             if (!cn105_request_settings_if_needed() && !cn105_flush_pending(&g_hp)) {
-                switch (cycle % 3) {
+                switch (cycle % 2) {
                 case 0: cn105_request_settings(); break;
-                case 1: cn105_request_room_temp(); break;
-                default: cn105_request_status(); break;
+                default: cn105_request_room_temp(); break;
                 }
                 cycle++;
             }

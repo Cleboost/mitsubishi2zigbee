@@ -28,8 +28,6 @@ static const uint8_t SETHEADER[]  = {0xfc, 0x41, 0x01, 0x30, 0x10};
 
 #define INFO_SETTINGS     0x02
 #define INFO_ROOM_TEMP    0x03
-#define INFO_STATUS       0x06
-
 #define CTRL_POWER  0x01
 #define CTRL_MODE   0x02
 #define CTRL_TEMP   0x04
@@ -408,7 +406,6 @@ static void request_info(uint8_t info_mode)
 
 void cn105_request_settings(void)  { request_info(INFO_SETTINGS); }
 void cn105_request_room_temp(void) { request_info(INFO_ROOM_TEMP); }
-void cn105_request_status(void)    { request_info(INFO_STATUS); }
 
 static void note_user_cmd(void)
 {
@@ -549,13 +546,6 @@ static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
         if (fabsf(temp - st->room_temp) > 0.01f) {
             st->room_temp = temp;
             s_current.room_temp = temp;
-            changed = true;
-        }
-    }
-    else if (info_mode == INFO_STATUS && dlen >= 5) {
-        bool op = (data[4] != 0x00);
-        if (op != st->operating) {
-            st->operating = op;
             changed = true;
         }
     }

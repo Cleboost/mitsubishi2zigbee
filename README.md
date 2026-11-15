@@ -25,7 +25,7 @@ Inspired by [gysmo38/mitsubishi2MQTT](https://github.com/gysmo38/mitsubishi2MQTT
 | **Setpoint** | 16–31 °C in 1 °C steps |
 | **Fan speed** | Auto, Quiet (Smart), Low, Medium, High |
 | **Vane** | Auto, positions 1–5, Swing |
-| **Telemetry** | Room temperature, compressor run state → HA `running_state` |
+| **Telemetry** | Room temperature |
 | **Status LED** (WS2812) | On by default (fast/slow blue, green when paired); set Zigbee `debug` to `false` to keep the LED off |
 
 ## Hardware

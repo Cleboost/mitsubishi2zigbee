@@ -33,7 +33,6 @@ typedef struct {
     char  fan[8];          // "AUTO","QUIET","1","2","3","4"
     char  vane[8];         // "AUTO","1".."5","SWING"
     float room_temp;
-    bool  operating;       // compressor running (INFO 0x06)
 } hp_state_t;
 
 void hp_state_copy_cmd(const hp_state_t *src, hp_state_t *dst);
@@ -42,7 +41,6 @@ void cn105_init(void);
 void cn105_connect(void);
 void cn105_request_settings(void);
 void cn105_request_room_temp(void);
-void cn105_request_status(void);
 bool cn105_poll(hp_state_t *out);
 bool cn105_flush_pending(const hp_state_t *current);
 bool cn105_request_settings_if_needed(void);
