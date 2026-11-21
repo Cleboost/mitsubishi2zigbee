@@ -1,6 +1,6 @@
 #pragma once
 
-#define ZB_MANUFACTURER_NAME "\x0A""Cleboost"
+#define ZB_MANUFACTURER_NAME "\x08""Cleboost"
 #define ZB_MODEL_ID          "\x11""Mitsubishi2Zigbee"
 #define HP_ENDPOINT_ID       1
 #define MITSU_EXT_CLUSTER_ID 0xFF00

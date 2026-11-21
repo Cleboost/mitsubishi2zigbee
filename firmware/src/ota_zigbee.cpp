@@ -1,6 +1,7 @@
 #include "device_manifest.h"
 #include "ota_zigbee.h"
 
+#include <string.h>
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -11,6 +12,9 @@ static const char *TAG = "OTA_ZB";
 static const esp_partition_t *s_ota_partition = nullptr;
 static esp_ota_handle_t s_ota_handle = 0;
 static bool s_tag_received = false;
+static uint16_t s_tag_id = 0;
+static uint32_t s_total_size = 0;
+static uint32_t s_offset = 0;
 
 #define OTA_ELEMENT_HEADER_LEN 6
 
@@ -18,21 +22,46 @@ typedef enum {
     UPGRADE_IMAGE = 0x0000,
 } ota_element_tag_id_t;
 
+static void ota_reset_state(bool abort_handle)
+{
+    if (abort_handle && s_ota_handle != 0) {
+        esp_ota_abort(s_ota_handle);
+    }
+    s_ota_handle = 0;
+    s_ota_partition = nullptr;
+    s_tag_received = false;
+    s_tag_id = 0;
+    s_total_size = 0;
+    s_offset = 0;
+}
+
+static void ota_reboot_cb(uint8_t param)
+{
+    (void)param;
+    ESP_LOGW(TAG, "OTA rebooting now");
+    esp_restart();
+}
+
 static esp_err_t element_ota_data(uint32_t total_size, const void *payload,
                                   uint16_t payload_size, void **outbuf,
                                   uint16_t *outlen)
 {
-    static uint16_t tagid = 0;
     const uint8_t *data = (const uint8_t *)payload;
 
     if (!s_tag_received) {
         if (!payload || payload_size <= OTA_ELEMENT_HEADER_LEN) {
             return ESP_ERR_INVALID_ARG;
         }
-        tagid = *(const uint16_t *)data;
-        uint32_t length = *(const uint32_t *)(data + sizeof(tagid));
+        uint32_t length = 0;
+        memcpy(&s_tag_id, data, sizeof(s_tag_id));
+        memcpy(&length, data + sizeof(s_tag_id), sizeof(length));
+        if (s_tag_id != UPGRADE_IMAGE) {
+            ESP_LOGE(TAG, "unsupported OTA tag 0x%04x", s_tag_id);
+            return ESP_ERR_INVALID_ARG;
+        }
         if ((length + OTA_ELEMENT_HEADER_LEN) != total_size) {
-            ESP_LOGE(TAG, "bad element length %lu (total %lu)", length, total_size);
+            ESP_LOGE(TAG, "bad element length %lu (total %lu)",
+                     (unsigned long)length, (unsigned long)total_size);
             return ESP_ERR_INVALID_ARG;
         }
         s_tag_received = true;
@@ -41,46 +70,65 @@ static esp_err_t element_ota_data(uint32_t total_size, const void *payload,
         return ESP_OK;
     }
 
-    *outbuf = (void *)data;
-    *outlen = payload_size;
-    if (tagid != UPGRADE_IMAGE) {
+    if (s_tag_id != UPGRADE_IMAGE) {
         return ESP_ERR_INVALID_ARG;
     }
+    *outbuf = (void *)data;
+    *outlen = payload_size;
     return ESP_OK;
 }
 
 static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t message)
 {
-    static uint32_t total_size = 0;
-    static uint32_t offset = 0;
     esp_err_t ret = ESP_OK;
 
     if (message.info.status != ESP_ZB_ZCL_STATUS_SUCCESS) {
-        return ESP_OK;
+        ESP_LOGW(TAG, "OTA message bad status 0x%02x (upgrade_status=%d)",
+                 message.info.status, (int)message.upgrade_status);
+        ota_reset_state(true);
+        return ESP_FAIL;
     }
 
     switch (message.upgrade_status) {
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
+        ota_reset_state(true);
         s_ota_partition = esp_ota_get_next_update_partition(nullptr);
         if (!s_ota_partition) {
             ESP_LOGE(TAG, "no OTA partition");
             return ESP_FAIL;
         }
-        ret = esp_ota_begin(s_ota_partition, 0, &s_ota_handle);
-        ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_begin failed");
+        ret = esp_ota_begin(s_ota_partition, OTA_SIZE_UNKNOWN, &s_ota_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(ret));
+            ota_reset_state(false);
+            return ret;
+        }
+        ESP_LOGI(TAG, "OTA start → partition %s", s_ota_partition->label);
         break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
-        total_size = message.ota_header.image_size;
-        offset += message.payload_size;
+        if (s_ota_handle == 0) {
+            ESP_LOGE(TAG, "OTA receive without active handle");
+            return ESP_ERR_INVALID_STATE;
+        }
+        s_total_size = message.ota_header.image_size;
+        s_offset += message.payload_size;
         if (message.payload_size && message.payload) {
             void *payload = nullptr;
             uint16_t payload_size = 0;
-            ret = element_ota_data(total_size, message.payload, message.payload_size,
+            ret = element_ota_data(s_total_size, message.payload, message.payload_size,
                                    &payload, &payload_size);
-            ESP_RETURN_ON_ERROR(ret, TAG, "element parse failed");
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "element parse failed: %s", esp_err_to_name(ret));
+                ota_reset_state(true);
+                return ret;
+            }
             ret = esp_ota_write(s_ota_handle, payload, payload_size);
-            ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_write failed");
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(ret));
+                ota_reset_state(true);
+                return ret;
+            }
         }
         break;
 
@@ -88,19 +136,43 @@ static esp_err_t ota_status_handler(esp_zb_zcl_ota_upgrade_value_message_t messa
         break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
-        ret = (offset == total_size) ? ESP_OK : ESP_FAIL;
-        offset = 0;
-        total_size = 0;
-        s_tag_received = false;
+        ret = (s_total_size > 0 && s_offset == s_total_size) ? ESP_OK : ESP_FAIL;
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "OTA size mismatch: %lu / %lu",
+                     (unsigned long)s_offset, (unsigned long)s_total_size);
+            ota_reset_state(true);
+        }
         break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
+        if (s_ota_handle == 0 || !s_ota_partition) {
+            ESP_LOGE(TAG, "OTA finish without active session");
+            ota_reset_state(true);
+            return ESP_ERR_INVALID_STATE;
+        }
         ret = esp_ota_end(s_ota_handle);
-        ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_end failed");
+        s_ota_handle = 0;
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(ret));
+            ota_reset_state(false);
+            return ret;
+        }
         ret = esp_ota_set_boot_partition(s_ota_partition);
-        ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_set_boot_partition failed");
-        ESP_LOGW(TAG, "OTA reboot");
-        esp_restart();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ret));
+            ota_reset_state(false);
+            return ret;
+        }
+        ota_reset_state(false);
+        ESP_LOGW(TAG, "OTA complete — rebooting in 1s");
+        esp_zb_scheduler_alarm((esp_zb_callback_t)ota_reboot_cb, 0, 1000);
+        break;
+
+    case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ABORT:
+    case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_SERVER_NOT_FOUND:
+    case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR:
+        ESP_LOGW(TAG, "OTA aborted/error (status=%d)", (int)message.upgrade_status);
+        ota_reset_state(true);
         break;
 
     default:

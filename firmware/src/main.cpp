@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_ota_ops.h"
 #include "led_strip.h"
 #include "esp_timer.h"
 #include "esp_zigbee_core.h"
@@ -52,11 +53,17 @@ static void led_set(uint8_t r, uint8_t g, uint8_t b)
 static void led_off(void) { led_strip_clear(g_led); }
 
 static volatile bool g_cn105_linked = false;
+static volatile bool g_zb_ready = false;
+static volatile bool g_zb_on_network = false;
+static volatile bool g_force_zb_sync = false;
 
 static bool zb_is_on_network(void)
 {
+    if (!g_zb_ready) return false;
     uint16_t addr = esp_zb_get_short_address();
-    return addr != 0xFFFE && addr != 0xFFFF;
+    bool on_net = (addr != 0xFFFE && addr != 0xFFFF);
+    g_zb_on_network = on_net;
+    return on_net;
 }
 
 static void led_task(void *arg)
@@ -84,7 +91,8 @@ static void led_task(void *arg)
             continue;
         }
         led_state_t show = g_led_state;
-        if (zb_is_on_network() && show != LED_CONNECTED) {
+        const bool on_net = g_zb_on_network;
+        if (on_net && show != LED_CONNECTED) {
             show = LED_CONNECTED;
         }
         switch (show) {
@@ -97,7 +105,7 @@ static void led_task(void *arg)
             led_off();                 vTaskDelay(pdMS_TO_TICKS(800));
             break;
         case LED_CONNECTED:
-            if (!zb_is_on_network()) {
+            if (!on_net) {
                 /* État CONNECTED fantôme (ex. signal permit join) — bleu lent */
                 led_set(0, 0, LED_BRIGHT);
                 vTaskDelay(pdMS_TO_TICKS(800));
@@ -261,14 +269,17 @@ static void hp_queue_cmd(hp_cmd_kind_t kind, uint8_t u8, int16_t i16)
 
 static void push_state_to_zigbee(const hp_state_t *st)
 {
+    if (!g_zb_ready) return;
+
     int16_t local_temp = (int16_t)(st->room_temp * 100.0f);
     int16_t setpoint   = (int16_t)(lroundf(st->target_temp) * 100);
     uint8_t sys_mode   = zcl_mode_from_hp(st);
     uint8_t fan_mode   = zcl_fan_from_hp(st);
     const bool cmd_pending = cn105_cmd_pending();
 
-    g_syncing_zigbee = true;
     esp_zb_lock_acquire(portMAX_DELAY);
+    g_syncing_zigbee = true;
+    (void)zb_is_on_network();
     int16_t cool_sp = (int16_t)HP_ZCL_COOL_SETPOINT_DUMMY;
     esp_zb_zcl_set_attribute_val(HP_ENDPOINT_ID,
         ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
@@ -300,11 +311,11 @@ static void push_state_to_zigbee(const hp_state_t *st)
                  sys_mode, (int)st->power_on, st->mode, (double)st->target_temp);
         last_sys_mode_logged = sys_mode;
     }
-    esp_zb_lock_release();
     g_syncing_zigbee = false;
+    esp_zb_lock_release();
 }
 
-static void hp_drain_cmd_queue(void)
+static bool hp_drain_cmd_queue(void)
 {
     hp_cmd_t mode = {}, setpt = {}, fan = {}, vane = {};
     bool have_mode = false, have_setpt = false, have_fan = false, have_vane = false;
@@ -325,6 +336,11 @@ static void hp_drain_cmd_queue(void)
         g_vane_attr = vane.u8;
         cn105_set_vane(cn105_vane_name(vane.u8));
     }
+    const bool any = have_mode || have_setpt || have_fan || have_vane;
+    if (any) {
+        hp_state_copy_cmd(cn105_wanted_state(), &g_hp);
+    }
+    return any;
 }
 
 static signed int mitsu_ext_check_value(uint16_t attr_id, uint8_t endpoint, uint8_t *value)
@@ -387,17 +403,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         return ESP_OK;
     }
 
-    if (g_syncing_zigbee) {
-        const hp_state_t *w = cn105_wanted_state();
-        if (cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL &&
-            attr == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
-            if (*(uint8_t *)val == zcl_fan_from_hp(w)) return ESP_OK;
-        } else if (cluster == ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT &&
-                   attr == ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID) {
-            if (*(uint8_t *)val == zcl_mode_from_hp(w)) return ESP_OK;
-        } else {
-            return ESP_OK;
-        }
+    if (g_syncing_zigbee || !val) {
+        return ESP_OK;
     }
 
     if (cluster == ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT) {
@@ -425,7 +432,9 @@ static void bdb_start_commissioning_cb(uint8_t mode_mask)
 
 static void mark_zigbee_joined(void)
 {
+    g_zb_on_network = true;
     g_led_state = LED_CONNECTED;
+    g_force_zb_sync = true;
     ESP_LOGI(TAG, "On network: short=0x%04x pan=0x%04x ch=%u",
              esp_zb_get_short_address(),
              esp_zb_get_pan_id(),
@@ -445,6 +454,7 @@ static void update_led_after_steering(esp_err_t err_status,
         return;
     }
 
+    g_zb_on_network = false;
     g_led_state = LED_FOUND;
     ESP_LOGW(TAG, "Steering failed: esp_err=%s bdb=%d short=0x%04x",
              esp_err_to_name(err_status),
@@ -471,10 +481,16 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             ESP_LOGI(TAG, "start steering (factory_new=%d short=0x%04x)",
                      esp_zb_bdb_is_factory_new() ? 1 : 0,
                      esp_zb_get_short_address());
-            g_led_state = LED_SEARCHING;
+            if (zb_is_on_network()) {
+                mark_zigbee_joined();
+            } else {
+                g_led_state = LED_SEARCHING;
+            }
             esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
         } else {
-            ESP_LOGW(TAG, "stack init failed: %s", esp_err_to_name(err_status));
+            ESP_LOGW(TAG, "stack init failed (%s) — retrying in 1s", esp_err_to_name(err_status));
+            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_commissioning_cb,
+                                   ESP_ZB_BDB_MODE_INITIALIZATION, 1000);
         }
         break;
 
@@ -499,8 +515,18 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         break;
     }
 
+    case ESP_ZB_ZDO_SIGNAL_LEAVE: {
+        ESP_LOGW(TAG, "Left Zigbee network — restarting steering in 1s");
+        g_zb_on_network = false;
+        g_led_state = LED_SEARCHING;
+        esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_commissioning_cb,
+                               ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+        break;
+    }
+
     case ESP_ZB_NWK_SIGNAL_PERMIT_JOIN_STATUS: {
-        uint8_t duration = *(uint8_t *)esp_zb_app_signal_get_params(p_sg_p);
+        void *params = esp_zb_app_signal_get_params(p_sg_p);
+        uint8_t duration = params ? *(uint8_t *)params : 0;
         if (duration) {
             ESP_LOGI(TAG, "Coordinator permit join open (%us), local short=0x%04x",
                      duration, esp_zb_get_short_address());
@@ -512,6 +538,15 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
     default:
         break;
+    }
+}
+
+static void enable_attr_reporting(esp_zb_attribute_list_t *list, uint16_t attr_id)
+{
+    for (esp_zb_attribute_list_t *p = list; p != nullptr; p = p->next) {
+        if (p->attribute.id == attr_id) {
+            p->attribute.access |= ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
+        }
     }
 }
 
@@ -558,21 +593,25 @@ static esp_zb_cluster_list_t *create_hvac_cluster_list(void)
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID, &lim_max_cool);
     esp_zb_thermostat_cluster_add_attr(th,
         ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_SETPOINT_DEAD_BAND_ID, &g_setpoint_dead_band);
+    enable_attr_reporting(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
+    enable_attr_reporting(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
     esp_zb_cluster_list_add_thermostat_cluster(list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
+    const uint8_t ext_access = ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
     esp_zb_attribute_list_t *mitsu_ext = esp_zb_zcl_attr_list_create(MITSU_EXT_CLUSTER_ID);
     ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, VANE_ATTR_ID,
-        ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &g_vane_attr));
+        ESP_ZB_ZCL_ATTR_TYPE_U8, ext_access, &g_vane_attr));
     ESP_ERROR_CHECK(esp_zb_custom_cluster_add_custom_attr(mitsu_ext, DEBUG_LED_ATTR_ID,
-        ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &g_debug_led_attr));
+        ESP_ZB_ZCL_ATTR_TYPE_U8, ext_access, &g_debug_led_attr));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_custom_cluster(list, mitsu_ext, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {
         .fan_mode          = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_AUTO,
         .fan_mode_sequence = ESP_ZB_ZCL_FAN_CONTROL_FAN_MODE_SEQUENCE_LOW_MED_HIGH_AUTO,
     };
-    esp_zb_cluster_list_add_fan_control_cluster(list,
-        esp_zb_fan_control_cluster_create(&fan_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_attribute_list_t *fan = esp_zb_fan_control_cluster_create(&fan_cfg);
+    enable_attr_reporting(fan, ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID);
+    esp_zb_cluster_list_add_fan_control_cluster(list, fan, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     return list;
 }
@@ -587,9 +626,9 @@ static void hp_sync_task(void *arg)
     while (true) {
         int64_t now = esp_timer_get_time() / 1000;
 
-        hp_drain_cmd_queue();
+        bool changed = hp_drain_cmd_queue();
 
-        bool changed = cn105_poll(&g_hp);
+        if (cn105_poll(&g_hp)) changed = true;
         while (cn105_poll(&g_hp)) changed = true;
 
         if (!g_hp.connected) {
@@ -613,7 +652,10 @@ static void hp_sync_task(void *arg)
         }
 
         g_cn105_linked = g_hp.connected;
-        if (changed) push_state_to_zigbee(&g_hp);
+        if (changed || g_force_zb_sync) {
+            g_force_zb_sync = false;
+            push_state_to_zigbee(&g_hp);
+        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -647,15 +689,24 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_secur_network_min_join_lqi_set(0);
 
     ESP_ERROR_CHECK(esp_zb_start(false));
+    g_zb_ready = true;
+    g_force_zb_sync = true;
+    esp_ota_mark_app_valid_cancel_rollback();
     esp_zb_stack_main_loop();
 }
 
 extern "C" void app_main(void)
 {
-    ESP_ERROR_CHECK(nvs_flash_init());
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
     debug_led_load_nvs();
 
     g_hp_cmd_q = xQueueCreate(16, sizeof(hp_cmd_t));
+    ESP_ERROR_CHECK(g_hp_cmd_q ? ESP_OK : ESP_ERR_NO_MEM);
 
     esp_zb_platform_config_t config = {};
     config.radio_config.radio_mode = ZB_RADIO_MODE_NATIVE;

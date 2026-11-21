@@ -20,7 +20,7 @@ HEX_LEN=$(printf '\\x%02x' "$LEN")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEADER="${SCRIPT_DIR}/../src/ota_zigbee.h"
 
-sed -i "s/^#define OTA_FILE_VERSION.*/#define OTA_FILE_VERSION         ${FILE_VERSION}/" "$HEADER"
-sed -i "s/^#define FW_VERSION_STRING.*/#define FW_VERSION_STRING        \"${HEX_LEN}\"\"${VERSION}\"/" "$HEADER"
+sed -i "s|^#define OTA_FILE_VERSION.*|#define OTA_FILE_VERSION         ${FILE_VERSION}|" "$HEADER"
+sed -i "s|^#define FW_VERSION_STRING.*|#define FW_VERSION_STRING        \"\\${HEX_LEN}\"\"${VERSION}\"|" "$HEADER"
 
 echo "Set firmware version ${VERSION} (${FILE_VERSION}) in ${HEADER}"

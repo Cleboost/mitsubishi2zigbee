@@ -51,14 +51,14 @@ static bool       s_user_pending = false;
 static bool       s_need_settings = true;
 static int64_t    s_last_user_cmd_ms = 0;
 #define USER_CMD_GRACE_MS 5000
+#define MAX_CMD_RETRIES   5
 static int64_t    s_last_tx_ms = 0;
 static int64_t    s_last_rx_ms = 0;
-static bool       s_half_degree = false;
-static bool       s_half_degree_known = false;
 static bool       s_unit_isee = false;
 static bool       s_rx_seen = false;
 static int        s_baud_rate = 2400;
-static uint8_t       s_connect_fails = 0;
+static uint8_t    s_connect_fails = 0;
+static uint8_t    s_pending_retries = 0;
 
 static const char *byte_to_str(uint8_t b, const uint8_t *bytes, const char *const *strs, int n)
 {
@@ -161,11 +161,21 @@ void hp_state_copy_cmd(const hp_state_t *src, hp_state_t *dst)
 
 static bool settings_differ(const hp_state_t *wanted, const hp_state_t *current);
 
+static bool hp_state_equals(const hp_state_t *a, const hp_state_t *b)
+{
+    if (a->connected != b->connected) return false;
+    if (a->power_on != b->power_on) return false;
+    if (strcmp(a->mode, b->mode) != 0) return false;
+    if (fabsf(a->target_temp - b->target_temp) > 0.01f) return false;
+    if (strcmp(a->fan, b->fan) != 0) return false;
+    if (strcmp(a->vane, b->vane) != 0) return false;
+    if (fabsf(a->room_temp - b->room_temp) > 0.01f) return false;
+    return true;
+}
+
 static void apply_settings_from_info(const uint8_t *data, int dlen, hp_state_t *st)
 {
     if (dlen < 12) return;
-    s_half_degree = (data[11] != 0x00);
-    s_half_degree_known = true;
     s_unit_isee = (data[4] > 0x08);
 
     hp_state_t unit = s_current;
@@ -175,8 +185,11 @@ static void apply_settings_from_info(const uint8_t *data, int dlen, hp_state_t *
     if (mode_b > 0x08) mode_b = (uint8_t)(mode_b - 0x08);
     strncpy(unit.mode, byte_to_str(mode_b, MODE_B, MODE_S, 5), sizeof(unit.mode));
 
-    if (data[11] != 0x00) unit.target_temp = (data[11] - 128) / 2.0f;
-    else                  unit.target_temp = legacy_byte_to_temp(data[5]);
+    float raw_target = (data[11] != 0x00) ? ((data[11] - 128) / 2.0f)
+                                          : legacy_byte_to_temp(data[5]);
+    if (raw_target < 16.0f) raw_target = 16.0f;
+    if (raw_target > 31.0f) raw_target = 31.0f;
+    unit.target_temp = (float)(int)lroundf(raw_target);
 
     strncpy(unit.fan, byte_to_str(data[6], FAN_B, FAN_S, 6), sizeof(unit.fan));
     strncpy(unit.vane, byte_to_str(data[7], VANE_B, VANE_S, 7), sizeof(unit.vane));
@@ -188,23 +201,12 @@ static void apply_settings_from_info(const uint8_t *data, int dlen, hp_state_t *
     const bool initial_sync = s_need_settings;
     s_current = unit;
 
-    /* HeatPump: wanted ≠ current - sync murale mode/power/temp ; garder fan/vane utilisateur */
+    /* Sync murale complète hors fenêtre de commande Zigbee en cours */
     if (initial_sync) {
         s_wanted = unit;
     } else if (!s_user_pending &&
                (now_ms() - s_last_user_cmd_ms) > USER_CMD_GRACE_MS) {
-        s_wanted.power_on = unit.power_on;
-        /* Ne pas écraser fan_only tant que l'unité n'a pas confirmé le mode FAN */
-        if (strcmp(s_wanted.mode, "FAN") != 0 || strcmp(unit.mode, "FAN") == 0) {
-            strncpy(s_wanted.mode, unit.mode, sizeof(s_wanted.mode));
-        }
-        s_wanted.target_temp = unit.target_temp;
-        if (strcmp(s_wanted.fan, "AUTO") == 0) {
-            strncpy(s_wanted.fan, unit.fan, sizeof(s_wanted.fan));
-        }
-        if (strcmp(s_wanted.vane, "AUTO") == 0) {
-            strncpy(s_wanted.vane, unit.vane, sizeof(s_wanted.vane));
-        }
+        copy_cmd_fields(&unit, &s_wanted);
     }
 
     if (s_user_pending || settings_differ(&s_wanted, &s_current)) {
@@ -221,6 +223,7 @@ static void apply_settings_from_info(const uint8_t *data, int dlen, hp_state_t *
 static void mark_rx(void)
 {
     s_last_rx_ms = now_ms();
+    s_rx_seen = true;
 }
 
 static void mark_link_up(hp_state_t *out)
@@ -240,6 +243,8 @@ static void mark_link_down(hp_state_t *out)
         ESP_LOGW(TAG, "CN105 link down");
     }
     s_link_up = false;
+    s_rx_seen = false;
+    s_connect_fails = 0;
     s_need_settings = true;
     if (out) {
         out->connected = false;
@@ -411,6 +416,7 @@ static void note_user_cmd(void)
 {
     s_last_user_cmd_ms = now_ms();
     s_user_pending = true;
+    s_pending_retries = 0;
 }
 
 bool cn105_flush_pending(const hp_state_t *live)
@@ -422,6 +428,20 @@ bool cn105_flush_pending(const hp_state_t *live)
     }
     if (!settings_differ(&s_wanted, &s_current)) {
         s_user_pending = false;
+        s_pending_retries = 0;
+        return false;
+    }
+    if (s_pending_retries >= MAX_CMD_RETRIES ||
+        (s_pending_retries > 0 && (now_ms() - s_last_user_cmd_ms) > USER_CMD_GRACE_MS)) {
+        ESP_LOGW(TAG, "CN105 command timeout after %u retries - resyncing from unit",
+                 (unsigned)s_pending_retries);
+        s_user_pending = false;
+        s_pending_retries = 0;
+        copy_cmd_fields(&s_current, &s_wanted);
+        if (live) {
+            copy_cmd_fields(&s_current, (hp_state_t *)live);
+        }
+        s_need_settings = true;
         return false;
     }
     if (!tx_ready()) return false;
@@ -433,7 +453,14 @@ bool cn105_flush_pending(const hp_state_t *live)
         for (int i = 0; i < 8 && cn105_poll(&sink); i++) {}
     }
 
+    if (!s_link_up || !settings_differ(&s_wanted, &s_current)) {
+        s_user_pending = false;
+        s_pending_retries = 0;
+        return false;
+    }
+
     if (send_update(&s_wanted, &s_current)) {
+        s_pending_retries++;
         return true;
     }
     return false;
@@ -498,6 +525,7 @@ void cn105_set_temp(float temp_c)
 
 void cn105_set_fan(const char *fan)
 {
+    if (!fan || !fan[0]) return;
     ensure_state_defaults();
     if (strcmp(s_wanted.mode, "FAN") == 0 && strcmp(fan, "AUTO") == 0) return;
     if (strcmp(s_wanted.fan, fan) == 0) return;
@@ -507,6 +535,7 @@ void cn105_set_fan(const char *fan)
 
 void cn105_set_vane(const char *vane)
 {
+    if (!vane || !vane[0]) return;
     ensure_state_defaults();
     if (strcmp(s_wanted.vane, vane) == 0) return;
     note_user_cmd();
@@ -537,7 +566,7 @@ static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
         hp_state_t before = *st;
         apply_settings_from_info(data, dlen, st);
         s_need_settings = false;
-        if (memcmp(&before, st, sizeof(*st)) != 0) changed = true;
+        if (!hp_state_equals(&before, st)) changed = true;
     }
     else if (info_mode == INFO_ROOM_TEMP && dlen >= 7) {
         float temp;
@@ -546,6 +575,7 @@ static bool parse_info(const uint8_t *data, int dlen, hp_state_t *st)
         if (fabsf(temp - st->room_temp) > 0.01f) {
             st->room_temp = temp;
             s_current.room_temp = temp;
+            s_wanted.room_temp = temp;
             changed = true;
         }
     }
@@ -560,7 +590,6 @@ bool cn105_poll(hp_state_t *out)
     uint8_t byte;
 
     while (uart_read_bytes(CN105_UART_PORT, &byte, 1, 0) == 1) {
-        s_rx_seen = true;
         if (byte != 0xfc) continue;
 
         uint8_t hdr[4];
@@ -574,7 +603,7 @@ bool cn105_poll(hp_state_t *out)
 
         uint8_t data[PACKET_LEN] = {};
         if (dlen > 0 &&
-            uart_read_bytes(CN105_UART_PORT, data, dlen, pdMS_TO_TICKS(100)) != dlen) break;
+            uart_read_bytes(CN105_UART_PORT, data, dlen, pdMS_TO_TICKS(150)) != dlen) break;
 
         uint8_t cks;
         if (uart_read_bytes(CN105_UART_PORT, &cks, 1, pdMS_TO_TICKS(100)) != 1) break;
@@ -592,8 +621,10 @@ bool cn105_poll(hp_state_t *out)
             if (parse_info(data, dlen, out)) changed = true;
         } else if (type == TYPE_SET_ACK) {
             mark_link_up(out);
-            s_current = s_wanted;
+            copy_cmd_fields(&s_wanted, &s_current);
+            copy_cmd_fields(&s_wanted, out);
             s_user_pending = false;
+            s_pending_retries = 0;
             changed = true;
         }
     }

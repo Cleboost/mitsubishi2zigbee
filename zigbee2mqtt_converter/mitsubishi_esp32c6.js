@@ -34,7 +34,8 @@ function mitsuAttrU8(msg, name, attrId) {
 
 function swBuildIdToFileVersion(swBuildId) {
     if (!swBuildId || typeof swBuildId !== 'string') return null;
-    const parts = swBuildId.split('.');
+    const clean = swBuildId.trim().replace(/^[^\d]+/, '');
+    const parts = clean.split('.');
     if (parts.length !== 3) return null;
     const nums = parts.map((p) => parseInt(p, 10));
     if (nums.some((n) => Number.isNaN(n))) return null;
@@ -70,15 +71,22 @@ const fzThermostat = {
 const fzFirmware = {
     cluster: 'genBasic',
     type: ['attributeReport', 'readResponse'],
-    convert: (model, msg) => {
+    convert: (model, msg, publish, options, meta) => {
         if (msg.data.swBuildId === undefined) return;
-        const fileVersion = swBuildIdToFileVersion(msg.data.swBuildId);
-        const result = {software_build_id: msg.data.swBuildId};
+        const cleanVer = String(msg.data.swBuildId).trim().replace(/^[^\d]+/, '');
+        const fileVersion = swBuildIdToFileVersion(cleanVer);
+        const result = {software_build_id: cleanVer || msg.data.swBuildId};
         if (fileVersion != null) {
+            const prevUpdate = meta?.state?.update;
+            const latest =
+                prevUpdate?.latest_version != null && prevUpdate.latest_version > fileVersion
+                    ? prevUpdate.latest_version
+                    : fileVersion;
             result.update = {
+                ...prevUpdate,
                 installed_version: fileVersion,
-                latest_version: fileVersion,
-                state: 'idle',
+                latest_version: latest,
+                state: latest > fileVersion ? 'available' : (prevUpdate?.state ?? 'idle'),
             };
         }
         return result;
@@ -175,10 +183,7 @@ module.exports = {
     vendor: 'Cleboost',
     description: 'Cleboost ESP32-C6 Zigbee gateway for Mitsubishi CN105',
     icon: 'https://raw.githubusercontent.com/Cleboost/mitsubishi2zigbee/main/assets/mitsubishi2zigbee.png',
-    ota: {
-        manufacturerCode: 0x1337,
-        imageType: 0x0001,
-    },
+    ota: true,
     endpoint: (device) => ({default: 1, ota: 2}),
     extend: [
         m.deviceAddCustomCluster(MITSU_EXT_CLUSTER, {
@@ -245,36 +250,39 @@ module.exports = {
                 logger?.debug?.(`bind ${cluster}: ${e}`);
             }
         }
-        try {
-            await reporting.thermostatTemperature(ep);
-            await reporting.thermostatOccupiedHeatingSetpoint(ep);
-            await reporting.fanMode(ep);
-            await ep.configureReporting('hvacThermostat', [
+        const tryReporting = async (label, fn) => {
+            try {
+                await fn();
+            } catch (e) {
+                logger?.warning?.(`reporting (${label}): ${e}`);
+            }
+        };
+        await tryReporting('localTemp', () => reporting.thermostatTemperature(ep));
+        await tryReporting('occupiedHeatingSetpoint', () =>
+            reporting.thermostatOccupiedHeatingSetpoint(ep),
+        );
+        await tryReporting('fanMode', () => reporting.fanMode(ep));
+        await tryReporting('systemMode', () =>
+            ep.configureReporting('hvacThermostat', [
                 {
                     attribute: 'systemMode',
-                    minimumReportInterval: 10,
+                    minimumReportInterval: 1,
                     maximumReportInterval: 300,
                     reportableChange: 1,
                 },
-            ]);
-            await ep.configureReporting(MITSU_EXT_CLUSTER, [
+            ]),
+        );
+        await tryReporting('vanePosition', () =>
+            ep.configureReporting(MITSU_EXT_CLUSTER, [
                 {
                     attribute: 'vanePosition',
-                    minimumReportInterval: 10,
+                    minimumReportInterval: 1,
                     maximumReportInterval: 600,
                     reportableChange: 1,
                 },
-            ]);
-        } catch (e) {
-            logger?.warning?.(`reporting: ${e}`);
-        }
+            ]),
+        );
         await readFullDeviceState(ep);
         await ep.read('genBasic', ['swBuildId']);
-        const otaEp = device.getEndpoint(2);
-        if (otaEp) {
-            try {
-                await otaEp.read('genOta', ['currentFileVersion']);
-            } catch {}
-        }
     },
 };
