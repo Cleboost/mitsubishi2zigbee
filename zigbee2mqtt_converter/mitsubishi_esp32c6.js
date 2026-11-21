@@ -58,7 +58,7 @@ const fzThermostat = {
     convert: (model, msg, publish, options, meta) => {
         const result = {};
         if (msg.data.localTemp !== undefined) {
-            result.local_temperature = roundDeg(Number(msg.data.localTemp) / 100);
+            result.local_temperature = Math.round(Number(msg.data.localTemp) / 10) / 10;
         }
         if (msg.data.systemMode !== undefined) {
             result.system_mode = zclSystemModeToString(msg.data.systemMode);
