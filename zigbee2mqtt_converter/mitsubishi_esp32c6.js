@@ -99,7 +99,7 @@ const fzVane = {
     convert: (model, msg) => {
         const idx = mitsuAttrU8(msg, 'vanePosition', 0x0000);
         if (idx === undefined) return;
-        return {vane_position: VANE_OPTIONS[idx] ?? 'auto'};
+        return {swing_mode: VANE_OPTIONS[idx] ?? 'auto'};
     },
 };
 
@@ -140,12 +140,12 @@ const tzSetpoint = {
 };
 
 const tzVane = {
-    key: ['vane_position'],
+    key: ['swing_mode'],
     convertSet: async (entity, key, value, meta) => {
         const idx = VANE_OPTIONS.indexOf(value);
         if (idx < 0) return;
         await entity.write(MITSU_EXT_CLUSTER, {vanePosition: idx});
-        return {state: {vane_position: value}};
+        return {state: {swing_mode: value}};
     },
     convertGet: async (entity, key, meta) => {
         await entity.read(MITSU_EXT_CLUSTER, ['vanePosition']);
@@ -217,10 +217,8 @@ module.exports = {
             .withSystemMode(['off', 'heat', 'cool', 'auto', 'fan_only', 'dry'])
             .withSetpoint('occupied_heating_setpoint', 16, 31, 1)
             .withLocalTemperature()
-            .withFanMode(['auto', 'low', 'medium', 'high', 'smart']),
-        e
-            .enum('vane_position', ea.ALL, VANE_OPTIONS)
-            .withDescription('Inclinaison des pales (AUTO, 1-5, SWING)'),
+            .withFanMode(['auto', 'low', 'medium', 'high', 'smart'])
+            .withSwingMode(VANE_OPTIONS),
         e
             .binary('debug', ea.ALL, true, false)
             .withDescription(
