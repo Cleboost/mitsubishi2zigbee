@@ -6,7 +6,7 @@ const m = require('zigbee-herdsman-converters/lib/modernExtend');
 const e = exposes.presets;
 const ea = exposes.access;
 
-const VANE_OPTIONS = ['auto', '1', '2', '3', '4', '5', 'swing'];
+const VANE_OPTIONS = ['auto', '1 - Haut', '2 - Mi-haut', '3 - Milieu', '4 - Mi-bas', '5 - Bas', 'swing'];
 const MITSU_EXT_CLUSTER = 'manuSpecificMitsubishiHvac';
 const HVAC_CLUSTERS = ['hvacThermostat', 'hvacFanCtrl', MITSU_EXT_CLUSTER];
 /** ZCL cooling occupied setpoint on device (dummy high; satisfies dead-band vs heating) */
