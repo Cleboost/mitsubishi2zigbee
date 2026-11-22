@@ -362,6 +362,7 @@ static void mitsu_ext_write_attr(uint8_t endpoint, uint16_t attr_id, uint8_t *ne
     if (g_syncing_zigbee || !new_value) return;
     if (attr_id == VANE_ATTR_ID && *new_value < CN105_VANE_COUNT) {
         g_vane_attr = *new_value;
+        ESP_LOGI(TAG, "ZCL write vane=%u (%s)", (unsigned)*new_value, cn105_vane_name(*new_value));
         hp_queue_cmd(HP_CMD_VANE, *new_value, 0);
     } else if (attr_id == DEBUG_LED_ATTR_ID) {
         /* Callback ZCL : LED tout de suite, NVS en différé (évite timeout Z2M) */
